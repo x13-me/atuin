@@ -58,11 +58,11 @@ default = [
 ]
 client = ["atuin-client"]
 sync = ["atuin-client/sync"]
-daemon = ["dep:async-stream", "atuin-client/daemon", "atuin-daemon", "atuin-ai?/daemon"]
+daemon = ["dep:async-stream", "atuin-client/daemon", "atuin-daemon"]
 ai = ["atuin-ai", "atuin-client/ai", "atuin-common/ai", "atuin-daemon?/ai"]
 pty-proxy = ["dep:atuin-pty-proxy"]
 # Compiled in, but nothing reaches Atuin for Teams until the user sets `teams.enabled`, which
-# `atuin setup --teams` does.
+# `atuin setup --hub` does.
 octavo = [
     "ai",
     "sync",
@@ -126,8 +126,8 @@ frizbee = { workspace = true }
 futures-util = { workspace = true }
 i18n-embed = { workspace = true }
 indicatif = { workspace = true }
-interim = { workspace = true }
 itertools = { workspace = true }
+jiff = { workspace = true }
 locked-tripwire = { workspace = true }
 norm = { workspace = true }
 opentelemetry = { workspace = true, optional = true }
@@ -148,7 +148,6 @@ shlex = { workspace = true }
 sysinfo = { workspace = true }
 tempfile = { workspace = true }
 thiserror = { workspace = true }
-time = { workspace = true }
 tiny-bip39 = { workspace = true }
 tokio = { workspace = true }
 # settings editor with comment and relative ordering preservation
@@ -172,7 +171,6 @@ arboard = { workspace = true, optional = true, features = ["wayland-data-control
 # compiles cleanly. tree-sitter 0.26's portable/endian.h fails on illumos,
 # Windows cross-compiles, and potentially other exotic targets.
 [target.'cfg(any(target_os = "linux", target_os = "macos", target_os = "windows", target_os = "illumos"))'.dependencies]
-atuin-ai = { workspace = true, optional = true, features = ["tree-sitter"] }
 tree-sitter = { workspace = true }
 tree-sitter-bash = { workspace = true }
 tree-sitter-fish = { workspace = true }

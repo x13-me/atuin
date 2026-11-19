@@ -361,10 +361,7 @@ async fn unified_session_folds_the_snapshot_with_its_journal() {
     assert_eq!(msgs[0].turn_id(), Some("t1".to_owned()));
     assert_eq!(msgs[0].model(), None);
     assert_eq!(msgs[2].model(), Some("mistral-large-4-0".to_owned()));
-    assert_eq!(
-        msgs[0].timestamp(),
-        OffsetDateTime::from_unix_timestamp_nanos(1_700_000_000_000i128 * 1_000_000).ok()
-    );
+    assert_eq!(msgs[0].timestamp(), Timestamp::from_millisecond(1_700_000_000_000).ok());
 }
 
 #[rstest]

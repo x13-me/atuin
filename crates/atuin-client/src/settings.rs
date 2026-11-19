@@ -7,11 +7,9 @@ use std::time::Duration;
 
 use atuin_common::logs::LogLevel;
 use atuin_common::path::{AbsPathBuf, ExpandError, PathAnchor, PathExt, RelativeTo, ShellExpanded};
-// `AsDuration`/`AsDisableableDuration` are deprecated.
+// `AsDuration` is deprecated.
 #[allow(deprecated)]
-use atuin_common::time::{
-    AsDisableableDuration, AsDuration, Days, Minutes, NonZeroDuration, Seconds,
-};
+use atuin_common::time::{AsDuration, Days, Seconds};
 use atuin_common::userio;
 use atuin_domain::record::HostId;
 use clap::ValueEnum;
@@ -19,13 +17,15 @@ use config::builder::DefaultState;
 use config::{Config, ConfigBuilder, Environment, File as ConfigFile, FileFormat};
 use eyre::{Context, Result, eyre};
 use fs_err::{File, create_dir_all};
+use jiff::civil::DateTime;
+use jiff::tz::Offset;
+use jiff::{Timestamp, ZonedDateTime};
 use regex::RegexSet;
 use secrecy::SecretString;
 use semver::Version;
 use serde::{Deserialize, Serialize};
 use serde_with::serde_as;
 use thiserror::Error;
-use time::OffsetDateTime;
 use tokio::sync::OnceCell;
 use tracing::instrument;
 use url::Url;
@@ -214,7 +214,76 @@ impl From<Dialect> for interim::Dialect {
     }
 }
 
-use atuin_common::time::UtcOffsetSpec;
+/// Errors returned by [`Dialect::parse_date`].
+#[derive(Debug, thiserror::Error)]
+pub enum ParseDateError {
+    #[error(transparent)]
+    Unrecognized(#[from] interim::DateError),
+    #[error("the date is out of range")]
+    OutOfRange,
+}
+
+impl Dialect {
+    /// Read an informal date such as `yesterday 3pm` or `2 weeks ago`, relative to `now` and in
+    /// its time zone unless the text carries an explicit offset.
+    ///
+    /// A date or clock time (`2026-07-01`, `yesterday 3pm`) is read in the zone on that date, so
+    /// one across a DST change from today still means its local time. A span (`3 hours ago`) is
+    /// measured exactly from `now`.
+    pub fn parse_date(
+        self,
+        text: &str,
+        now: &ZonedDateTime,
+    ) -> Result<ZonedDateTime, ParseDateError> {
+        // interim works in one fixed offset. It builds a date or clock time from wall-clock
+        // fields at that offset, and a span or an explicit offset by moving the instant. Read at
+        // two offsets a second apart, only a wall-clock result moves, and that one is resolved
+        // in the zone on its own date instead of at today's offset.
+        let offset = now.offset().seconds();
+        let nudged = if offset < Offset::MAX.seconds() {
+            offset + 1
+        } else {
+            offset - 1
+        };
+        let at = self.parse_at(text, now.timestamp(), offset)?;
+        let nudged = self.parse_at(text, now.timestamp(), nudged)?;
+
+        if at.unix_timestamp_nanos() == nudged.unix_timestamp_nanos() {
+            let at = Timestamp::from_nanosecond(at.unix_timestamp_nanos())
+                .map_err(|_| ParseDateError::OutOfRange)?;
+            return Ok(at.to_zoned_datetime(now.time_zone().clone()));
+        }
+
+        let wall = DateTime::new(
+            i16::try_from(at.year()).map_err(|_| ParseDateError::OutOfRange)?,
+            u8::from(at.month()).cast_signed(),
+            at.day().cast_signed(),
+            at.hour().cast_signed(),
+            at.minute().cast_signed(),
+            at.second().cast_signed(),
+            i32::try_from(at.nanosecond()).map_err(|_| ParseDateError::OutOfRange)?,
+        )
+        .map_err(|_| ParseDateError::OutOfRange)?;
+        wall.to_zoned_datetime(now.time_zone().clone()).map_err(|_| ParseDateError::OutOfRange)
+    }
+
+    /// `text` as interim reads it against `now`, at `offset` seconds east of UTC.
+    fn parse_at(
+        self,
+        text: &str,
+        now: Timestamp,
+        offset: i32,
+    ) -> Result<time::OffsetDateTime, ParseDateError> {
+        let offset =
+            time::UtcOffset::from_whole_seconds(offset).map_err(|_| ParseDateError::OutOfRange)?;
+        let now = time::OffsetDateTime::from_unix_timestamp_nanos(now.as_nanosecond())
+            .map_err(|_| ParseDateError::OutOfRange)?
+            .to_offset(offset);
+        Ok(interim::parse_date_string(text, now, self.into())?)
+    }
+}
+
+use atuin_common::time::TimeZoneSpec;
 
 #[derive(Clone, Debug, Deserialize, Copy, Serialize)]
 pub enum Style {
@@ -596,12 +665,13 @@ pub struct PtyProxy {
     pub enabled: bool,
 }
 
-/// `[teams]`: Atuin for Teams, which `atuin setup --teams` turns on.
+/// `[teams]`: Atuin for Teams, which `atuin setup --hub` turns on.
 #[cfg(feature = "octavo")]
 #[derive(Clone, Debug, Deserialize, Serialize)]
 pub struct Teams {
     pub enabled: bool,
-    /// Whether the commands Atuin records go to Atuin for Teams, while `enabled`.
+    /// Whether the commands Atuin records go to Atuin for Teams too, while `enabled`. Off unless
+    /// set.
     pub upload_history: bool,
     /// Which agent threads go to Atuin for Teams, while `enabled`.
     pub upload_threads: ThreadUploads,
@@ -617,7 +687,7 @@ impl Default for Teams {
     fn default() -> Self {
         Self {
             enabled: false,
-            upload_history: true,
+            upload_history: false,
             upload_threads: ThreadUploads::All,
             upload_output: false,
             debug: TeamsDebug::default(),
@@ -761,97 +831,8 @@ pub struct Logs {
     pub ai: LogConfig,
 }
 
-/// Endpoint protocol for Atuin AI.
-///
-/// When set to "auto" (default), the protocol is inferred from `ai.endpoint`:
-/// an unset or official Atuin address is treated as Hub, anything else as an
-/// OSS server. Set explicitly to "hub" to keep Hub behavior with a custom
-/// endpoint (useful for local development against a Hub instance).
-#[derive(Clone, Copy, Debug, Deserialize, PartialEq, Eq, Serialize, Default)]
-#[serde(rename_all = "lowercase")]
-pub enum AiEndpointProtocol {
-    /// Atuin Hub: browser-based login flow, stored Hub session, usage reporting.
-    Hub,
-    /// A standalone AI server (e.g. atuin-ai-server): requests go straight to
-    /// the endpoint, authenticated with `ai.api_token` if set.
-    Oss,
-    /// Infer from ai.endpoint (default behavior)
-    #[default]
-    Auto,
-}
-
-#[allow(deprecated)]
-#[serde_as]
-#[derive(Clone, Debug, Deserialize, Serialize)]
-pub struct Ai {
-    /// Whether or not the AI features are enabled.
-    pub enabled: Option<bool>,
-
-    /// The address of the Atuin AI endpoint. Used for AI features like command generation.
-    /// Only necessary for custom AI endpoints.
-    pub endpoint: Option<Url>,
-
-    /// How to talk to `endpoint`. See [`AiEndpointProtocol`].
-    #[serde(default)]
-    pub endpoint_protocol: AiEndpointProtocol,
-
-    /// The API token for the Atuin AI endpoint. Used for AI features like command generation.
-    /// Only necessary for custom AI endpoints.
-    #[serde(skip_serializing)]
-    pub api_token: Option<SecretString>,
-
-    /// Path to the AI sessions database.
-    #[serde_as(as = "RelativeTo<ConfigDir>")]
-    pub db_path: DbLocation,
-
-    /// The maximum time an AI session can be automatically resumed (a bare number is minutes).
-    /// `0` disables auto-resume.
-    #[serde_as(as = "AsDisableableDuration<Minutes>")]
-    pub session_continue_minutes: Option<NonZeroDuration>,
-
-    /// The AI model to use for AI chats, based on the Atuin AI model alias.
-    pub model: Option<String>,
-
-    /// Whether to enable YOLO mode (skips all permission checks)
-    #[serde(default)]
-    pub yolo: bool,
-
-    /// Deprecated: use opening.send_cwd instead. Kept for backwards compatibility.
-    #[serde(default)]
-    pub send_cwd: Option<bool>,
-
-    /// Configuration for what context is sent in the opening AI request.
-    #[serde(default)]
-    pub opening: AiOpening,
-
-    /// Tool capability flags.
-    #[serde(default)]
-    pub capabilities: AiCapabilities,
-
-    /// Whether the AI TUI surfaces feature tips. `None` = enabled.
-    pub tips: Option<bool>,
-}
-
-#[derive(Default, Clone, Debug, Deserialize, Serialize)]
-pub struct AiCapabilities {
-    /// Whether the AI can request to search Atuin history. `None` = unset (defaults to enabled, and the ai will ask for permission).
-    pub enable_history_search: Option<bool>,
-    /// Whether the AI can request to view the stored output, if any, for Atuin history entries. `None` = unset (defaults to enabled, and the ai will ask for permission).
-    pub enable_history_output: Option<bool>,
-    /// Whether the AI can request to read and write files. `None` = unset (defaults to enabled, and the ai will ask for permission).
-    pub enable_file_tools: Option<bool>,
-    /// Whether the AI can request to execute bash commands. `None` = unset (defaults to enabled, and the ai will ask for permission).
-    pub enable_command_execution: Option<bool>,
-}
-
-#[derive(Default, Clone, Debug, Deserialize, Serialize)]
-pub struct AiOpening {
-    /// Whether or not to send the current working directory to the AI endpoint.
-    pub send_cwd: Option<bool>,
-
-    /// Whether or not to send the last command as context in the opening AI request.
-    pub send_last_command: Option<bool>,
-}
+#[derive(Clone, Debug, Default, Deserialize, Serialize)]
+pub struct RetiredAi {}
 
 impl Default for Preview {
     fn default() -> Self {
@@ -1132,7 +1113,7 @@ pub struct Settings {
     #[serde_as(as = "RelativeTo<ConfigDir>")]
     pub data_dir: AbsPathBuf,
     pub dialect: Dialect,
-    pub timezone: UtcOffsetSpec,
+    pub timezone: TimeZoneSpec,
     pub style: Style,
     pub auto_sync: bool,
     pub update_check: bool,
@@ -1265,7 +1246,9 @@ pub struct Settings {
 
     pub meta: meta::Settings,
 
-    pub ai: Ai,
+    /// Atuin AI's settings, from before it was removed, so that a typo in `[ai]` is still found.
+    #[serde(default)]
+    pub ai: RetiredAi,
 
     #[serde(default)]
     pub threads: Threads,
@@ -1356,7 +1339,7 @@ impl Settings {
         self.meta_store().await?.host_id().await
     }
 
-    pub async fn last_sync(&self) -> Result<OffsetDateTime> {
+    pub async fn last_sync(&self) -> Result<Timestamp> {
         self.meta_store().await?.last_sync().await
     }
 
@@ -1364,7 +1347,7 @@ impl Settings {
         self.meta_store().await?.save_sync_time().await
     }
 
-    pub async fn last_version_check(&self) -> Result<OffsetDateTime> {
+    pub async fn last_version_check(&self) -> Result<Timestamp> {
         self.meta_store().await?.last_version_check().await
     }
 
@@ -1377,8 +1360,8 @@ impl Settings {
             return Ok(false);
         }
 
-        Ok(OffsetDateTime::now_utc() - self.last_sync().await?
-            >= time::Duration::try_from(self.sync_frequency)?)
+        Ok(Timestamp::now() - self.last_sync().await?
+            >= jiff::SignedDuration::try_from(self.sync_frequency)?)
     }
 
     pub async fn logged_in(&self) -> Result<bool> {
@@ -1417,22 +1400,6 @@ impl Settings {
             SyncProtocol::Hub => true,
             SyncProtocol::Legacy => false,
             SyncProtocol::Auto => Self::is_official_address(&self.sync_address),
-        }
-    }
-
-    /// Returns whether the resolved AI endpoint should be treated as an Atuin
-    /// Hub instance (browser login flow, Hub session management, usage
-    /// reporting) rather than a standalone OSS server.
-    ///
-    /// `endpoint` is the resolved AI endpoint — the `--api-endpoint` flag or
-    /// `ai.endpoint` setting, after defaults are applied — which is why it's a
-    /// parameter rather than read from `self.ai.endpoint`.
-    #[must_use]
-    pub fn is_hub_ai_endpoint(&self, endpoint: &Url) -> bool {
-        match self.ai.endpoint_protocol {
-            AiEndpointProtocol::Hub => true,
-            AiEndpointProtocol::Oss => false,
-            AiEndpointProtocol::Auto => Self::is_official_address(endpoint),
         }
     }
 
@@ -1527,10 +1494,10 @@ impl Settings {
     #[cfg(feature = "check-update")]
     async fn needs_update_check(&self) -> Result<bool> {
         let last_check = self.last_version_check().await?;
-        let diff = OffsetDateTime::now_utc() - last_check;
+        let diff = Timestamp::now() - last_check;
 
         // Check a max of once per hour
-        Ok(diff.whole_hours() >= 1)
+        Ok(diff.as_hours() >= 1)
     }
 
     #[cfg(feature = "check-update")]
@@ -1622,7 +1589,7 @@ impl Settings {
     /// The default of each path setting, for `data_dir`, [escaped](ShellExpanded::escape) as
     /// config.toml would write it. An empty value of a path setting falls back to its default
     /// here, so every path setting needs one.
-    fn path_defaults(data_dir: &Path) -> [(&'static str, Option<String>); 14] {
+    fn path_defaults(data_dir: &Path) -> [(&'static str, Option<String>); 13] {
         let path = |path: &Path| path.to_str().map(ShellExpanded::escape);
         [
             ("data_dir", path(data_dir)),
@@ -1638,7 +1605,6 @@ impl Settings {
             ("kv.db_path", path(&data_dir.join("kv.db"))),
             ("scripts.db_path", path(&data_dir.join("scripts.db"))),
             ("meta.db_path", path(&data_dir.join("meta.db"))),
-            ("ai.db_path", path(&data_dir.join("ai_sessions.db"))),
         ]
     }
 
@@ -1769,10 +1735,6 @@ impl Settings {
             .set_default("search.frequency_score_multiplier", 1.0)?
             .set_default("search.frecency_score_multiplier", 1.0)?
             .set_default("search.shells", "auto")?
-            .set_default("ai.session_continue_minutes", 60)?
-            .set_default("ai.send_cwd", false)?
-            .set_default("ai.opening.send_cwd", false)?
-            .set_default("ai.opening.send_last_command", false)?
             .set_default("ui.syntax_highlight", true)?
             .set_default("search.filters", vec![
                 "global",
@@ -1944,12 +1906,24 @@ impl Settings {
         },
     ];
 
-    /// Keys that this build has no setting for, but that a build with other features reads.
-    const UNCHECKED_KEYS: &[&str] = if cfg!(feature = "octavo") {
-        &[]
-    } else {
-        &["teams"]
-    };
+    /// Keys that this build has no setting for, but that a build with other features reads, or
+    /// that Atuin AI read before it was removed.
+    const UNCHECKED_KEYS: &[&str] = &[
+        #[cfg(not(feature = "octavo"))]
+        "teams",
+        "ai.api_token",
+        "ai.capabilities",
+        "ai.db_path",
+        "ai.enabled",
+        "ai.endpoint",
+        "ai.endpoint_protocol",
+        "ai.model",
+        "ai.opening",
+        "ai.send_cwd",
+        "ai.session_continue_minutes",
+        "ai.tips",
+        "ai.yolo",
+    ];
 
     /// Read renamed keys under their new names, for any key the new name doesn't set itself:
     /// `[threads]` was `ai.capture_sessions`, `ai.capture_tools` and `[ai.sessions]`, and `[teams]`
@@ -1980,7 +1954,7 @@ impl Settings {
         #[cfg(feature = "octavo")]
         let defaults = defaults
             .set_default("teams.enabled", false)?
-            .set_default("teams.upload_history", true)?
+            .set_default("teams.upload_history", false)?
             .set_default("teams.upload_threads", "all")?
             .set_default("teams.upload_output", false)?;
         legacy
@@ -2030,7 +2004,7 @@ impl Settings {
     /// The path settings by key, as deserialization resolved them; the merged [`Config`] holds
     /// them as written, with Atuin's own defaults [escaped](ShellExpanded::escape). A new path
     /// setting belongs here too, or `atuin config get --resolved` shows it as written.
-    fn resolved_paths(&self) -> [(&'static str, &OsStr); 13] {
+    fn resolved_paths(&self) -> [(&'static str, &OsStr); 12] {
         [
             ("data_dir", self.data_dir.as_os_str()),
             ("db_path", self.db_path.as_os_str()),
@@ -2044,7 +2018,6 @@ impl Settings {
             ("kv.db_path", self.kv.db_path.as_os_str()),
             ("scripts.db_path", self.scripts.db_path.as_os_str()),
             ("meta.db_path", self.meta.db_path.as_os_str()),
-            ("ai.db_path", self.ai.db_path.as_os_str()),
         ]
     }
 
@@ -2208,6 +2181,7 @@ mod tests {
     use atuin_common::path::{AbsPathBuf, PathBufExt as _};
     use config::{Config, ValueKind};
     use eyre::Result;
+    use jiff::ZonedDateTime;
     use rstest::{fixture, rstest};
     use url::Url;
 
@@ -2215,8 +2189,8 @@ mod tests {
     use super::ThreadUploads;
     use super::unknown_keys::{Checked, UnknownKeys};
     use super::{
-        AiEndpointProtocol, ConfigFile, DbLocation, FileFormat, FilterMode, RequestedSearchMode,
-        SearchMode, Settings, UtcOffsetSpec,
+        ConfigFile, DbLocation, Dialect, FileFormat, FilterMode, RequestedSearchMode, SearchMode,
+        Settings, TimeZoneSpec,
     };
 
     #[rstest]
@@ -2239,9 +2213,12 @@ mod tests {
     #[case::minus_with_seconds("-01:23:45", (-1, -23, -45))]
     fn can_parse_offset_timezone_spec(
         #[case] input: &str,
-        #[case] expected: (i8, i8, i8),
+        #[case] (hours, minutes, seconds): (i32, i32, i32),
     ) -> Result<()> {
-        assert_eq!(UtcOffsetSpec::from_str(input)?.0.as_hms(), expected);
+        assert_eq!(
+            TimeZoneSpec::from_str(input)?.time_zone().to_fixed_offset()?.seconds(),
+            hours * 3600 + minutes * 60 + seconds
+        );
         Ok(())
     }
 
@@ -2250,27 +2227,45 @@ mod tests {
     #[case::bare_hour("5")]
     #[case::bare_hour_minutes("10:30")]
     fn rejects_timezone_spec_without_leading_sign(#[case] input: &str) {
-        assert!(UtcOffsetSpec::from_str(input).is_err());
+        assert!(TimeZoneSpec::from_str(input).is_err());
     }
 
+    /// Dates and clock times mean their local time on their own date, across a DST change from
+    /// today. Spans and explicit offsets are exact.
     #[rstest]
-    // Auto: official addresses are Hub, anything else is OSS
-    #[case::auto_hub_address(AiEndpointProtocol::Auto, "https://hub.atuin.sh", true)]
-    #[case::auto_api_address(AiEndpointProtocol::Auto, "https://api.atuin.sh", true)]
-    #[case::auto_third_party_address(AiEndpointProtocol::Auto, "https://ai.example.com", false)]
-    #[case::auto_localhost(AiEndpointProtocol::Auto, "http://localhost:4000", false)]
-    // An explicit protocol overrides the address check
-    #[case::explicit_hub_overrides_address(AiEndpointProtocol::Hub, "http://localhost:4000", true)]
-    #[case::explicit_oss_overrides_address(AiEndpointProtocol::Oss, "https://hub.atuin.sh", false)]
-    fn ai_endpoint_protocol_resolution(
-        #[case] protocol: AiEndpointProtocol,
-        #[case] endpoint: &str,
-        #[case] expected: bool,
-    ) {
-        let mut settings = Settings::default();
-        settings.ai.endpoint_protocol = protocol;
-
-        assert_eq!(settings.is_hub_ai_endpoint(&Url::parse(endpoint).unwrap()), expected,);
+    #[case::summer_date_read_in_winter(
+        "2026-01-15T12:00:00+01:00[Europe/Berlin]",
+        "2026-07-01",
+        "2026-07-01T00:00:00+02:00[Europe/Berlin]"
+    )]
+    #[case::clock_time_before_dst_began(
+        "2026-03-29T12:00:00+02:00[Europe/Berlin]",
+        "yesterday 3pm",
+        "2026-03-28T15:00:00+01:00[Europe/Berlin]"
+    )]
+    #[case::span_across_dst_is_exact(
+        "2026-03-29T03:30:00+02:00[Europe/Berlin]",
+        "2 hours ago",
+        "2026-03-29T00:30:00+01:00[Europe/Berlin]"
+    )]
+    #[case::explicit_offset_is_exact(
+        "2026-01-15T12:00:00+01:00[Europe/Berlin]",
+        "2026-07-01T00:00:00Z",
+        "2026-07-01T02:00:00+02:00[Europe/Berlin]"
+    )]
+    #[case::midnight_in_a_dst_gap_is_the_start_of_the_day(
+        "2026-09-10T12:00:00-03:00[America/Santiago]",
+        "2026-09-06",
+        "2026-09-06T01:00:00-03:00[America/Santiago]"
+    )]
+    fn parse_date_reads_dates_in_their_own_offset(
+        #[case] now: &str,
+        #[case] text: &str,
+        #[case] expected: &str,
+    ) -> Result<()> {
+        let now: ZonedDateTime = now.parse()?;
+        assert_eq!(Dialect::Uk.parse_date(text, &now)?, expected.parse::<ZonedDateTime>()?);
+        Ok(())
     }
 
     /// Forces both `LazyLock`s, so a typo in either constant fails here rather
@@ -2474,7 +2469,6 @@ mod tests {
         s.scripts.db_path.file().unwrap().to_path_buf()
     })]
     #[case::meta_db_path("meta.db_path", |s: &Settings| s.meta.db_path.file().unwrap().to_path_buf())]
-    #[case::ai_db_path("ai.db_path", |s: &Settings| s.ai.db_path.file().unwrap().to_path_buf())]
     fn relative_paths_resolve_next_to_config_toml(
         #[case] key: &str,
         #[case] path: fn(&Settings) -> PathBuf,
@@ -2506,7 +2500,6 @@ mod tests {
     #[case::kv_db_path("kv.db_path", |s: &Settings| s.kv.db_path.clone())]
     #[case::scripts_db_path("scripts.db_path", |s: &Settings| s.scripts.db_path.clone())]
     #[case::meta_db_path("meta.db_path", |s: &Settings| s.meta.db_path.clone())]
-    #[case::ai_db_path("ai.db_path", |s: &Settings| s.ai.db_path.clone())]
     fn database_paths_take_sqlite_urls_as_written(
         #[case] key: &str,
         #[case] location: fn(&Settings) -> DbLocation,
@@ -2565,8 +2558,7 @@ mod tests {
             "logs.ai.file",
             "kv.db_path",
             "scripts.db_path",
-            "meta.db_path",
-            "ai.db_path"
+            "meta.db_path"
         )]
         key: &str,
     ) {
@@ -2590,7 +2582,6 @@ mod tests {
     #[case::kv_db_path("kv.db_path", true)]
     #[case::scripts_db_path("scripts.db_path", true)]
     #[case::meta_db_path("meta.db_path", true)]
-    #[case::ai_db_path("ai.db_path", true)]
     fn a_path_setting_with_an_unset_variable_loads_as_written(
         config_env: MockEnv,
         #[case] key: &str,
@@ -2810,16 +2801,16 @@ mod tests {
 
     #[cfg(feature = "octavo")]
     #[rstest]
-    #[case::unset("", true, ThreadUploads::All)]
-    #[case::legacy("[octavo]\nenabled = true\n", true, ThreadUploads::All)]
-    #[case::history_off("[teams]\nupload_history = false\n", false, ThreadUploads::All)]
+    #[case::unset("", false, ThreadUploads::All)]
+    #[case::legacy("[octavo]\nenabled = true\n", false, ThreadUploads::All)]
+    #[case::history_on("[teams]\nupload_history = true\n", true, ThreadUploads::All)]
     #[case::workspaces(
         "[teams]\nupload_threads = \"workspaces\"\n",
-        true,
+        false,
         ThreadUploads::Workspaces
     )]
-    #[case::threads_off("[teams]\nupload_threads = \"off\"\n", true, ThreadUploads::Off)]
-    fn teams_uploads_history_and_threads_until_switched_off(
+    #[case::threads_off("[teams]\nupload_threads = \"off\"\n", false, ThreadUploads::Off)]
+    fn teams_uploads_threads_until_switched_off_and_history_once_switched_on(
         #[case] toml: &str,
         #[case] history: bool,
         #[case] threads: ThreadUploads,
@@ -2882,16 +2873,6 @@ mod tests {
         assert_eq!(settings.logs.search.retention, None);
         let overridden = parse_settings("[logs.search]\nretention = 0\n");
         assert_eq!(overridden.logs.search.retention, Some(std::time::Duration::ZERO));
-    }
-
-    #[rstest]
-    fn negative_session_continue_minutes_disables_resume() {
-        // Legacy clamped a negative value to 0 (disabled); it must load, not error.
-        Settings::validate_str("[ai]\nsession_continue_minutes = -5\n")
-            .expect("negative session_continue_minutes must load");
-
-        let settings = parse_settings("[ai]\nsession_continue_minutes = -5\n");
-        assert_eq!(settings.ai.session_continue_minutes, None);
     }
 
     #[rstest]
@@ -3120,10 +3101,13 @@ columns = [{{ type = \"command\", not_a_column_field = true }}]
     #[case::example(Settings::example_config())]
     #[case::shells("search.shells = \"auto\"\n")]
     #[case::nested_and_optional(
-        "filter_mode = \"directory\"\nai.enabled = true\n[keys]\nscroll_exits = false\n"
+        "filter_mode = \"directory\"\nthreads.mouse = false\n[keys]\nscroll_exits = false\n"
     )]
     #[case::legacy_keys(
         "[ai]\ncapture_sessions = true\ncapture_tools = false\n\n[ai.sessions]\nmouse = false\n"
+    )]
+    #[case::retired_ai_keys(
+        "[ai]\nenabled = false\nmodel = \"m\"\nyolo = true\n\n[ai.opening]\nsend_cwd = true\n"
     )]
     fn known_settings_are_not_unknown(#[case] toml: &str) {
         assert_unknown(&load_file(toml).unknown, &[]);
@@ -3132,12 +3116,12 @@ columns = [{{ type = \"command\", not_a_column_field = true }}]
     #[rstest]
     fn known_nested_and_optional_settings_are_honored() {
         let settings = load_file(
-            "filter_mode = \"directory\"\nai.enabled = true\n[keys]\nscroll_exits = false\n",
+            "filter_mode = \"directory\"\nthreads.mouse = false\n[keys]\nscroll_exits = false\n",
         )
         .value;
         assert!(!settings.keys.scroll_exits);
         assert_eq!(settings.filter_mode, Some(FilterMode::Directory));
-        assert_eq!(settings.ai.enabled, Some(true));
+        assert_eq!(settings.threads.mouse, Some(false));
     }
 
     #[rstest]
@@ -3145,6 +3129,7 @@ columns = [{{ type = \"command\", not_a_column_field = true }}]
         "[ai.sessions]\nmouse_typo = false\n",
         &["ai.sessions.mouse_typo"]
     )]
+    #[case::under_ai("[ai]\ncapture_sesions = true\n", &["ai.capture_sesions"])]
     #[case::under_both_spellings(
         "[threads]\nmouse_typo = true\n\n[ai.sessions]\nmouse_typo = false\n",
         &["ai.sessions.mouse_typo", "threads.mouse_typo"]

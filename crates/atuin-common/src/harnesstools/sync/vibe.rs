@@ -364,7 +364,7 @@ fn replace_unified(
     }
     let journal = journal_segment(store)?;
     let journal_bytes = std::fs::read(&journal).unwrap_or_default();
-    let backup = backup_path(&journal, backups, time::OffsetDateTime::now_utc(), 0)
+    let backup = backup_path(&journal, backups, jiff::Timestamp::now(), 0)
         .ok_or_else(|| SyncError::Other("no backup path".to_owned()))?;
     std::fs::create_dir_all(backups)?;
     crate::fs::write_new(&backup, &journal_bytes)?;
@@ -489,7 +489,6 @@ fn call_inputs(rows: &[RehydrateMessage]) -> HashMap<String, (String, Value)> {
 mod tests {
     use rstest::rstest;
     use serde_json::json;
-    use time::macros::datetime;
 
     use super::*;
     use crate::harnesstools::session::{Content, Role, ToolCallId, ToolResult, ToolUse};
@@ -500,7 +499,7 @@ mod tests {
         RehydrateMessage {
             source_id: id.to_owned(),
             parent_source_id: None,
-            timestamp: datetime!(2026-09-18 10:00:00 UTC),
+            timestamp: "2026-09-18T10:00:00Z".parse::<jiff::Timestamp>().unwrap(),
             role,
             content,
             model: None,

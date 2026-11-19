@@ -40,8 +40,6 @@ axum = "0.8"
 base64 = "0.22"
 bytes = "1"
 bytesize = { version = "2", features = ["serde"] }
-chrono = "0.4"
-chrono-humanize = "0.2"
 clap = { version = "4", features = ["derive"] }
 clap-couture = { version = "0.1", default-features = false, features = ["derive", "markdown", "interactive-inquire"] }
 clap_complete = "4"
@@ -62,9 +60,6 @@ dirs = "6"
 # which was released in 0.6.0
 easy-cast = { version = "0.5", features = ["assert_nonzero"] }
 enum_dispatch = "0.3"
-eventsource-stream = "0.2"
-eye_declare = "0.7"
-eye_declare_engine = { version = "0.7", features = ["test-util"] }
 eyre = "0.6"
 fjall = { version = "3" }
 fixedbitset = "0.5"
@@ -86,6 +81,7 @@ indicatif = "0.18"
 interim = { version = "0.2", features = ["time_0_3"] }
 ipnet = { version = "2.12", features = ["serde"] }
 itertools = "0.15"
+jiff = { version = "1.0.1", features = ["serde"] }
 lasso = "0.7"
 libc = "0.2"
 # Version range mirrors sqlx-sqlite's so cargo unifies both to a single
@@ -123,7 +119,6 @@ protox = "0.9"
 pulldown-cmark = "0.13"
 rand = { version = "0.8", features = ["std"] }
 ratatui = "0.30"
-ratatui-core = "0.1"
 ref-cast = "1"
 regex = "1"
 reqwest = { version = "0.13", default-features = false, features = ["json", "native-tls", "stream", "gzip", "zstd"] }
@@ -155,13 +150,15 @@ sha2 = "0.10"
 shellexpand = "3"
 shlex = "2"
 sql-builder = "3"
-sqlx = { version = "0.9", features = ["runtime-tokio", "time", "uuid"] }
+sqlx = { version = "0.9", features = ["runtime-tokio", "uuid"] }
 strum = { version = "0.27", features = ["strum_macros"] }
 strum_macros = "0.28"
 sysinfo = "0.39"
 tempfile = { version = "3" }
 thiserror = "2"
-time = { version = "0.3", features = ["serde-human-readable", "macros", "local-offset"] }
+# Only for the boundary with interim, which has no jiff 1.x support yet. Several dependencies
+# (plist, ratatui-widgets, rusty_paseto, tracing-appender) keep time in the tree regardless.
+time = "0.3"
 tiny-bip39 = "2"
 tracing = { version = "0.1", features = ["release_max_level_debug"] }
 tokio = { version = "1", features = ["full"] }
@@ -169,7 +166,7 @@ tokio-stream = { version = "0.1", features = ["net"] }
 tokio-util = { version = "0.7", features = ["rt"] }
 toml = "1"
 toml_edit = "0.25"
-tonic = "0.14"
+tonic = { version = "0.14", features = ["gzip"] }
 tonic-prost = "0.14"
 tonic-prost-build = "0.14"
 tonic-types = "0.14"
@@ -185,7 +182,6 @@ tree-sitter = "0.27"
 tree-sitter-bash = "0.25"
 tree-sitter-fish = "3"
 tree-sitter-powershell = "0.26"
-tui-textarea-2 = "0.13"
 typed-builder = "0.23"
 unicode-normalization = "0.1"
 unicode-segmentation = "1"

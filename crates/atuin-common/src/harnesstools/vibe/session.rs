@@ -30,8 +30,8 @@ use std::time::SystemTime;
 
 use futures::stream::FuturesUnordered;
 use futures::{Stream, StreamExt};
+use jiff::Timestamp;
 use serde_json::Value;
-use time::OffsetDateTime;
 use tokio::sync::watch;
 use typed_builder::TypedBuilder;
 
@@ -969,15 +969,15 @@ impl Message for VibeMessage {
         }
     }
 
-    fn timestamp(&self) -> Option<OffsetDateTime> {
+    fn timestamp(&self) -> Option<Timestamp> {
         match &self.line {
             // Legacy lines carry no timestamp; the folder's meta has the session's start.
             LineKind::Legacy(_) => None,
-            LineKind::Unified(entry) => {
-                entry.get("created_at").and_then(Value::as_u64).and_then(|ms| {
-                    OffsetDateTime::from_unix_timestamp_nanos(i128::from(ms) * 1_000_000).ok()
-                })
-            }
+            LineKind::Unified(entry) => entry
+                .get("created_at")
+                .and_then(Value::as_u64)
+                .and_then(|ms| i64::try_from(ms).ok())
+                .and_then(|ms| Timestamp::from_millisecond(ms).ok()),
         }
     }
 

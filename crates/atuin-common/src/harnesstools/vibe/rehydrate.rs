@@ -19,7 +19,6 @@ use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
 use serde_json::{Map, Value, json};
-use time::format_description::well_known::Rfc3339;
 
 use super::session::{default_root, locate, session_prefix};
 use crate::harnesstools::note::tool_note;
@@ -93,7 +92,10 @@ fn meta_json(session: &RehydrateSession) -> Value {
     meta.insert("session_id".into(), json!(session.id));
     meta.insert(
         "start_time".into(),
-        json!(session.started_at.format(&Rfc3339).unwrap_or_default()),
+        json!(
+            jiff::fmt::strtime::format("%Y-%m-%dT%H:%M:%S%.3fZ", session.started_at)
+                .unwrap_or_default()
+        ),
     );
     meta.insert("environment".into(), json!({"working_directory": session.cwd}));
     meta.insert(
@@ -215,8 +217,7 @@ pub(crate) fn render_entry(
             | Content::Unknown(_) => {}
         }
     }
-    let created_at =
-        u64::try_from(row.timestamp.unix_timestamp_nanos() / 1_000_000).unwrap_or_default();
+    let created_at = u64::try_from(row.timestamp.as_millisecond()).unwrap_or_default();
     let turn_id = || row.turn_id.clone().unwrap_or_else(|| row.source_id.clone());
 
     let mut out = Vec::new();
@@ -397,7 +398,6 @@ fn render_row(
 mod tests {
     use rstest::rstest;
     use serde_json::json;
-    use time::macros::datetime;
 
     use super::*;
     use crate::harnesstools::session::{ToolResult, ToolUse};
@@ -406,7 +406,7 @@ mod tests {
         RehydrateMessage {
             source_id: id.to_owned(),
             parent_source_id: None,
-            timestamp: datetime!(2026-09-18 10:00:00 UTC),
+            timestamp: "2026-09-18T10:00:00Z".parse::<jiff::Timestamp>().unwrap(),
             role,
             content,
             model: None,
@@ -427,7 +427,7 @@ mod tests {
             original_cwd: Some(PathBuf::from("/work")),
             git_branch: Some("main".to_owned()),
             model: None,
-            started_at: datetime!(2026-09-18 10:00:00 UTC),
+            started_at: "2026-09-18T10:00:00Z".parse::<jiff::Timestamp>().unwrap(),
             messages,
             fork_of: None,
         }

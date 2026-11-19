@@ -3,10 +3,10 @@ use std::sync::Arc;
 
 use atuin_client::ai_session::{HarnessKind, HarnessSession};
 use atuin_common::harnesstools::resume::CwdRequirement;
+use jiff::Timestamp;
 use parking_lot::Mutex;
 use rstest::{fixture, rstest};
 use tempfile::TempDir;
-use time::OffsetDateTime;
 
 use super::*;
 use crate::resume_tui::fake;
@@ -204,7 +204,7 @@ impl SessionSource for Synced {
             original_cwd: None,
             git_branch: None,
             model: None,
-            started_at: OffsetDateTime::UNIX_EPOCH,
+            started_at: Timestamp::UNIX_EPOCH,
             messages: Vec::new(),
             fork_of: None,
         })
@@ -224,7 +224,10 @@ struct Dirs {
 
 #[fixture]
 fn dirs() -> Dirs {
-    let tmp = tempfile::tempdir().unwrap();
+    // Next to the test binary: CI's temporary directory is mounted without exec, and some tests
+    // write programs here that must count as runnable.
+    let exe = std::env::current_exe().unwrap();
+    let tmp = tempfile::tempdir_in(exe.parent().unwrap()).unwrap();
     let repo = tmp.path().join("checkouts").joined("atuin");
     let here = repo.join("docs");
     let elsewhere = tmp.path().join("elsewhere");
@@ -605,7 +608,7 @@ impl SessionSource for Worked {
         let row = |n: i64, role, content| RehydrateMessage {
             source_id: format!("r{n}"),
             parent_source_id: None,
-            timestamp: OffsetDateTime::from_unix_timestamp(n).unwrap(),
+            timestamp: Timestamp::from_second(n).unwrap(),
             role,
             content,
             model: None,
@@ -803,7 +806,12 @@ async fn a_relative_template_program_is_found_from_the_sessions_directory(dirs: 
     let err = resumer.plan(&session).await.unwrap_err();
     assert_eq!(err, NotResumable::NotInstalled("./bin/wrapper".to_owned()));
 
-    let wrapper = dirs.elsewhere.join("bin/wrapper");
+    // Windows runs a file only by a `PATHEXT` extension, which the check adds to the name.
+    let wrapper = dirs.elsewhere.join(if cfg!(windows) {
+        "bin/wrapper.exe"
+    } else {
+        "bin/wrapper"
+    });
     std::fs::create_dir_all(wrapper.parent().unwrap()).unwrap();
     std::fs::write(&wrapper, "#!/bin/sh\n").unwrap();
     #[cfg(unix)]

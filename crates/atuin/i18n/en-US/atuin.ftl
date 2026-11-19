@@ -226,6 +226,7 @@ arg-history-timezone = Display the command time in another timezone other than t
         This option takes one of the following kinds of values:
 
         - the special value "local" (or "l") which refers to the system time zone
+        - a time zone name (e.g. "Europe/Berlin")
         - an offset from UTC (e.g. "+9", "-2:30")
 arg-history-list-format = Available variables: {"{"}command{"}"}, {"{"}directory{"}"}, {"{"}duration{"}"}, {"{"}user{"}"}, {"{"}host{"}"}, {"{"}author{"}"}, {"{"}intent{"}"}, {"{"}exit{"}"}, {"{"}time{"}"}, {"{"}session{"}"}, and {"{"}uuid{"}"}
     .long = 
@@ -252,7 +253,6 @@ cmd-import-xonsh = Import history from xonsh json files
 cmd-import-xonsh-sqlite = Import history from xonsh sqlite db
 arg-init-disable-ctrl-r = Disable the binding of CTRL-R to atuin
 arg-init-disable-up-arrow = Disable the binding of the Up Arrow key to atuin
-arg-init-disable-ai = Disable the binding of ? to Atuin AI
 arg-init-bind-ai-resume = Bind CTRL-] to atuin threads resume (zsh, bash and fish; off by default: it replaces the shell's own binding)
 value-init-shell-zsh = Zsh setup
 value-init-shell-bash = Bash setup
@@ -331,6 +331,7 @@ arg-search-timezone =
         This option takes one of the following kinds of values:
 
         - the special value "local" (or "l") which refers to the system time zone
+        - a time zone name (e.g. "Europe/Berlin")
         - an offset from UTC (e.g. "+9", "-2:30")
 arg-search-format = Available variables: {"{"}command{"}"}, {"{"}directory{"}"}, {"{"}duration{"}"}, {"{"}user{"}"}, {"{"}host{"}"}, {"{"}time{"}"}, {"{"}exit{"}"} and {"{"}relativetime{"}"}
     .long = 
