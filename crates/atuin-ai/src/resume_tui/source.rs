@@ -353,9 +353,10 @@ pub fn harness_arg(harness: HarnessKind) -> Option<&'static str> {
         HarnessKind::Copilot => Some("copilot"),
         HarnessKind::Kiro => Some("kiro"),
         HarnessKind::Hermes => Some("hermes"),
-        // Atuin can't write a Vibe transcript to continue a session in, only `vibe --resume` one
-        // of Vibe's own.
-        HarnessKind::Vibe | HarnessKind::Amp | HarnessKind::Unknown => None,
+        HarnessKind::Vibe => Some("vibe"),
+        // Atuin can't write an Amp transcript to continue a session in, only `amp threads
+        // continue` one of Amp's own.
+        HarnessKind::Amp | HarnessKind::Unknown => None,
     }
 }
 

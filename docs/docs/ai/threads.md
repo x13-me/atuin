@@ -487,7 +487,7 @@ From the command line, `atuin resume <id>` resumes a session in its own
 agent directly (an id prefix works too), writing it out from sync first when it
 isn't on this machine, and `atuin resume <id> --in codex` continues it in
 another (`claude-code`, `codex`, `copilot`, `grok`, `hermes`, `kiro`,
-`opencode`, `pi` or `omp`; `claude` is short for `claude-code` wherever Atuin
+`opencode`, `pi`, `omp` or `vibe`; `claude` is short for `claude-code` wherever Atuin
 takes an agent's name, and `kiro-cli` for `kiro`). `atuin resume
 <id> --fork` forks it. It catches the session up with sync as the picker does, and fails
 when that needs a choice, saying which: `--as-is` resumes this copy unchanged,
@@ -534,7 +534,7 @@ mouse = true
 
 To resume an agent's sessions with a command of your own in place of the
 built-in one, give a template per agent under `[threads.resume]` (`claude`,
-`codex`, `copilot`, `grok`, `hermes`, `kiro`, `opencode`, `pi`, `omp` or `amp`). It runs after `cd -- <cwd> &&`, with these
+`codex`, `copilot`, `grok`, `hermes`, `kiro`, `opencode`, `pi`, `omp`, `vibe` or `amp`). It runs after `cd -- <cwd> &&`, with these
 substituted:
 
 - `{id}`: the agent's own id for the session;

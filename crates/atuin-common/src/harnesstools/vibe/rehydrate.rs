@@ -15,6 +15,7 @@
 //! never made would corrupt the conversation), each call becoming a note in its row's text
 //! ([`tool_note`]).
 
+use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
 use serde_json::{Map, Value, json};
@@ -24,9 +25,10 @@ use super::session::{default_root, locate, session_prefix};
 use crate::harnesstools::note::tool_note;
 use crate::harnesstools::rehydrate::{
     RehydrateError, RehydrateMessage, RehydrateSession, UNCAPTURED_OUTPUT, parent_order,
+    record_merged,
 };
 use crate::harnesstools::resume;
-use crate::harnesstools::session::{Content, Role, ToolCallId};
+use crate::harnesstools::session::{Content, Role, ToolCallId, ToolResult, ToolUse};
 
 /// Write `session` under Vibe's save dir (see [`super::session`]), as a legacy folder, and return
 /// the folder [`locate`] finds it by.
@@ -113,7 +115,32 @@ fn meta_json(session: &RehydrateSession) -> Value {
 
 /// The folder's `messages.jsonl`: one LLMMessage per captured row, in parent order.
 fn render_lines(session: &RehydrateSession) -> String {
-    let rows = parent_order(session.messages.clone());
+    let rendered = render_rows(&parent_order(session.messages.clone()));
+    let mut lines = rendered.lines;
+    record_merged(&mut lines, &rendered.merged, |line| {
+        line.get("message_id").and_then(Value::as_str).map(str::to_owned)
+    });
+    let mut body = String::new();
+    for line in &lines {
+        body.push_str(&line.to_string());
+        body.push('\n');
+    }
+    body
+}
+
+/// The lines one set of captured rows writes, with the rows left without a line of their own.
+#[derive(Debug, Default)]
+pub(crate) struct Rendered {
+    pub lines: Vec<Value>,
+    /// The `message_id` each line carries, in order.
+    pub appended: Vec<String>,
+    /// Rows holding nothing written for them (a result whose call was captured without its
+    /// input), each with the row whose line stands for it.
+    pub merged: Vec<(String, String)>,
+}
+
+/// Render `rows` as legacy LLMMessage lines, in the order given.
+pub(crate) fn render_rows(rows: &[RehydrateMessage]) -> Rendered {
     // Calls captured without their input: their results are dropped with them, a result for a
     // call the model never made would corrupt the conversation.
     let uncaptured: std::collections::HashSet<String> = rows
@@ -124,14 +151,136 @@ fn render_lines(session: &RehydrateSession) -> String {
             _ => None,
         })
         .collect();
-    let mut body = String::new();
-    for row in &rows {
-        for line in render_row(row, &uncaptured) {
-            body.push_str(&line.to_string());
-            body.push('\n');
+    let mut call_rows: HashMap<String, String> = HashMap::new();
+    for row in rows {
+        for content in &row.content {
+            if let Content::ToolUse(call) = content {
+                call_rows.insert(call.id.as_ref().to_owned(), row.source_id.clone());
+            }
         }
     }
-    body
+    let mut rendered = Rendered::default();
+    for row in rows {
+        for line in render_row(row, &uncaptured) {
+            if let Some(id) = line.get("message_id").and_then(Value::as_str) {
+                rendered.appended.push(id.to_owned());
+            }
+            rendered.lines.push(line);
+        }
+    }
+    for row in rows {
+        for content in &row.content {
+            if let Content::ToolResult(result) = content
+                && uncaptured.contains(result.call.as_ref())
+                && let Some(into) = call_rows.get(result.call.as_ref())
+            {
+                rendered.merged.push((row.source_id.clone(), into.clone()));
+            }
+        }
+    }
+    rendered
+}
+
+/// One captured row as unified history entries: a `message` entry for its conversation text, an
+/// `effect` entry per tool call (its result in `state` when the row holds it, or when `calls`
+/// maps the call's id to its name and input). `calls` is every call of the rows being written,
+/// by call id.
+pub(crate) fn render_entry(
+    row: &RehydrateMessage,
+    calls: &HashMap<String, (String, Value)>,
+) -> Vec<Value> {
+    let mut text = String::new();
+    let mut uses: Vec<&ToolUse> = Vec::new();
+    let mut results: Vec<&ToolResult> = Vec::new();
+    for content in &row.content {
+        match content {
+            Content::Text(part) | Content::Summary(part) | Content::Error(part) => {
+                if !text.is_empty() {
+                    text.push('\n');
+                }
+                text.push_str(part);
+            }
+            Content::ToolUse(call) if !call.input.is_null() => uses.push(call),
+            Content::ToolUse(call) => {
+                if !text.is_empty() {
+                    text.push('\n');
+                }
+                text.push_str(&tool_note(&call.name, &call.input));
+            }
+            Content::ToolResult(result) => results.push(result),
+            Content::Reasoning(_)
+            | Content::ReasoningSummary { .. }
+            | Content::Patch(_)
+            | Content::Other(_)
+            | Content::Unknown(_) => {}
+        }
+    }
+    let created_at =
+        u64::try_from(row.timestamp.unix_timestamp_nanos() / 1_000_000).unwrap_or_default();
+    let turn_id = || row.turn_id.clone().unwrap_or_else(|| row.source_id.clone());
+
+    let mut out = Vec::new();
+    let conversation = matches!(row.role, Role::User | Role::Assistant | Role::Other(_));
+    if conversation && (!text.is_empty() || (uses.is_empty() && results.is_empty())) {
+        let role = match row.role {
+            Role::User => "user",
+            _ => "assistant",
+        };
+        out.push(json!({
+            "id": row.source_id,
+            "created_at": created_at,
+            "turn_id": turn_id(),
+            "type": "message",
+            "role": role,
+            "content": if text.is_empty() {
+                Value::Array(Vec::new())
+            } else {
+                json!([{"type": "text", "text": text}])
+            },
+        }));
+    }
+    let mut effect = |call: &str, name: &str, input: &Value, result: Option<&ToolResult>| {
+        let (status, output, error) = match result {
+            Some(r) => (
+                if r.error {
+                    "failed"
+                } else {
+                    "completed"
+                },
+                if r.output.is_null() {
+                    json!(UNCAPTURED_OUTPUT)
+                } else {
+                    r.output.clone()
+                },
+                r.error,
+            ),
+            None => ("pending", Value::Null, false),
+        };
+        out.push(json!({
+            "id": format!("{}#{call}", row.source_id),
+            "created_at": created_at,
+            "turn_id": turn_id(),
+            "type": "effect",
+            "tool_call_id": call,
+            "detail": {"tool_name": name, "input": input},
+            "state": {"status": status, "output": output, "is_error": error},
+        }));
+    };
+    for call in &uses {
+        let result = results.iter().find(|r| r.call.as_ref() == call.id.as_ref()).copied();
+        effect(call.id.as_ref(), &call.name, &call.input, result);
+    }
+    for result in &results {
+        if uses.iter().any(|u| u.id.as_ref() == result.call.as_ref()) {
+            continue;
+        }
+        let (name, input) = calls
+            .get(result.call.as_ref())
+            .cloned()
+            .unwrap_or_else(|| (String::new(), Value::Null));
+        effect(result.call.as_ref(), &name, &input, Some(result));
+    }
+    out
 }
 
 /// One captured row as legacy lines: a conversation line for `user`/`assistant` (with any tool

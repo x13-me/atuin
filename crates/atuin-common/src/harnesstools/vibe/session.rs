@@ -52,7 +52,10 @@ use crate::path::PathBufExt as _;
 use crate::sync::BlockingPool;
 
 /// The directory under the save dir where unified stores live.
-const UNIFIED_DIR: &str = "unified";
+pub(crate) const UNIFIED_DIR: &str = "unified";
+/// Vibe's lease directory for running sessions: `<save>/active/<id>.lock`, an `flock` held
+/// while Vibe has the session open.
+pub(crate) const ACTIVE_DIR: &str = "active";
 
 /// Where Vibe keeps its sessions by default (see the module docs).
 pub(crate) fn default_root() -> PathBuf {
@@ -115,7 +118,7 @@ pub enum Location {
 impl Location {
     /// The session's transcript: `messages.jsonl` for a legacy folder, `CURRENT` for a unified
     /// store.
-    fn transcript(&self) -> PathBuf {
+    pub(crate) fn transcript(&self) -> PathBuf {
         match self {
             Self::Legacy(dir) => dir.join("messages.jsonl"),
             Self::Unified(dir) => dir.join("CURRENT"),
@@ -126,12 +129,19 @@ impl Location {
 /// The session `id`'s store or folder under `root`: a unified store named by `id`, else a legacy
 /// folder whose `meta.json` names it. `None` when it is not there.
 pub(crate) fn locate(root: &Path, id: &str) -> Option<PathBuf> {
+    locate_full(root, id).map(|location| match location {
+        Location::Legacy(dir) | Location::Unified(dir) => dir,
+    })
+}
+
+/// [`locate`], with the session's [`Location`] rather than just its directory.
+pub(crate) fn locate_full(root: &Path, id: &str) -> Option<Location> {
     if !resume::is_plain_name(id) {
         return None;
     }
     let unified = root.join(UNIFIED_DIR).join(id);
     if unified.join("CURRENT").is_file() {
-        return Some(unified);
+        return Some(Location::Unified(unified));
     }
     let prefix = format!("{}_", session_prefix());
     let wanted = id.to_owned();
@@ -147,21 +157,22 @@ pub(crate) fn locate(root: &Path, id: &str) -> Option<PathBuf> {
         read_meta(path).is_some_and(|meta| meta.session_id == wanted)
     })
     .and_then(|meta| meta.parent().map(Path::to_path_buf))
+    .map(Location::Legacy)
 }
 
 /// A legacy folder's `meta.json`, the parts Atuin reads.
 #[derive(Debug, Clone, Default)]
 pub(crate) struct Meta {
-    session_id: String,
-    cwd: Option<PathBuf>,
-    parent: Option<String>,
-    title: Option<String>,
-    title_source: Option<String>,
-    git_branch: Option<String>,
+    pub(crate) session_id: String,
+    pub(crate) cwd: Option<PathBuf>,
+    pub(crate) parent: Option<String>,
+    pub(crate) title: Option<String>,
+    pub(crate) title_source: Option<String>,
+    pub(crate) git_branch: Option<String>,
 }
 
 /// Read a legacy `meta.json`; `None` when it is not there or not an object.
-fn read_meta(path: &Path) -> Option<Meta> {
+pub(crate) fn read_meta(path: &Path) -> Option<Meta> {
     let value: Value = crate::json::js::from_slice(&std::fs::read(path).ok()?).ok()?;
     let object = value.as_object()?;
     let str_of = |key: &str| object.get(key).and_then(Value::as_str).map(str::to_owned);
@@ -609,10 +620,14 @@ impl Session for VibeSession {
 
 /// The store a unified session holds: its history entries, each with the journal sequence that
 /// last wrote it, plus the session metadata and projection envelope.
-struct UnifiedStore {
-    entries: Vec<(u64, Value)>,
-    metadata: Value,
-    envelope: Value,
+pub(crate) struct UnifiedStore {
+    pub(crate) entries: Vec<(u64, Value)>,
+    pub(crate) metadata: Value,
+    pub(crate) envelope: Value,
+    /// A digest of every file the fold read, so a writer can tell the store changed under it.
+    pub(crate) stamp: crate::harnesstools::sync::Stamp,
+    /// The newest modification time among those files.
+    pub(crate) modified: Option<SystemTime>,
 }
 
 /// Canonical JSON bytes of an entry, what its checkpoint digests.
@@ -620,14 +635,34 @@ fn canonical(entry: &Value) -> Vec<u8> {
     serde_json::to_vec(entry).unwrap_or_default()
 }
 
+/// Read `path`, folding its bytes into `folded` and its modification time into `newest`, so the
+/// store's stamp and newest write are what the fold read.
+fn read_store_file(
+    path: &Path,
+    folded: &mut Vec<u8>,
+    newest: &mut Option<SystemTime>,
+) -> std::io::Result<Vec<u8>> {
+    let bytes = std::fs::read(path)?;
+    folded.extend_from_slice(&bytes);
+    if let Ok(at) = std::fs::metadata(path).and_then(|m| m.modified()) {
+        *newest = Some(newest.map_or(at, |t: SystemTime| t.max(at)));
+    }
+    Ok(bytes)
+}
+
 /// Read a unified store at `dir`: fold the projection snapshot with its recovery journal.
-fn read_store(dir: &Path) -> std::io::Result<UnifiedStore> {
-    let read_json = |path: &Path| -> std::io::Result<Value> {
-        let bytes = std::fs::read(path)?;
-        crate::json::js::from_slice(&bytes)
-            .map_err(|err| std::io::Error::new(std::io::ErrorKind::InvalidData, err.to_string()))
-    };
-    let current = read_json(&dir.join("CURRENT"))?;
+pub(crate) fn read_store(dir: &Path) -> std::io::Result<UnifiedStore> {
+    let mut folded = Vec::new();
+    let mut newest = None;
+    macro_rules! read_json {
+        ($path:expr) => {{
+            let bytes = read_store_file($path, &mut folded, &mut newest)?;
+            crate::json::js::from_slice(&bytes).map_err(|err| {
+                std::io::Error::new(std::io::ErrorKind::InvalidData, err.to_string())
+            })
+        }};
+    }
+    let current: Value = read_json!(&dir.join("CURRENT"))?;
     let generation = current
         .get("generation")
         .map(|g| g.as_str().map(str::to_owned).unwrap_or_else(|| g.to_string()))
@@ -636,19 +671,19 @@ fn read_store(dir: &Path) -> std::io::Result<UnifiedStore> {
         })?;
     let snapshot_sequence = current.get("snapshot_sequence").and_then(Value::as_u64).unwrap_or(0);
     let generation_dir = dir.join("generations").join(&generation);
-    let manifest = read_json(&generation_dir.join("manifest.json"))?;
+    let manifest: Value = read_json!(&generation_dir.join("manifest.json"))?;
 
     // The projection document: the envelope at its path, with the history entries either in it
     // or in the pool chunks it names (whose items concatenate to the entry list).
     let projection = manifest.get("projection_state").cloned().unwrap_or(Value::Null);
-    let mut envelope =
-        read_json(&generation_dir.join(
+    let mut envelope: Value =
+        read_json!(&generation_dir.join(
             projection.get("path").and_then(Value::as_str).unwrap_or("projection_state.json"),
         ))?;
     let mut entries: Vec<(u64, Value)> = Vec::new();
     if let Some(chunks) = projection.get("chunks").and_then(Value::as_array) {
         for digest in chunks.iter().filter_map(Value::as_str) {
-            let chunk: Value = read_json(&dir.join("chunks").join(format!("{digest}.json")))?;
+            let chunk: Value = read_json!(&dir.join("chunks").join(format!("{digest}.json")))?;
             if let Some(items) = chunk.as_array() {
                 entries.extend(items.iter().map(|item| (snapshot_sequence, item.clone())));
             }
@@ -664,9 +699,9 @@ fn read_store(dir: &Path) -> std::io::Result<UnifiedStore> {
 
     // The session metadata lives in the runtime state.
     let runtime = manifest.get("runtime_state").cloned().unwrap_or(Value::Null);
-    let runtime_doc = read_json(
+    let runtime_doc: Value = read_json!(
         &generation_dir
-            .join(runtime.get("path").and_then(Value::as_str).unwrap_or("runtime_state.json")),
+            .join(runtime.get("path").and_then(Value::as_str).unwrap_or("runtime_state.json"))
     )
     .unwrap_or(Value::Null);
     let metadata = runtime_doc.get("session_metadata").cloned().unwrap_or(Value::Null);
@@ -676,7 +711,7 @@ fn read_store(dir: &Path) -> std::io::Result<UnifiedStore> {
         manifest.get("recovery_journal_segment").and_then(|s| s.get("path")).and_then(Value::as_str)
     {
         let journal = dir.join(segment);
-        if let Ok(bytes) = std::fs::read(&journal) {
+        if let Ok(bytes) = read_store_file(&journal, &mut folded, &mut newest) {
             for line in bytes.split(|b| *b == b'\n') {
                 if line.iter().all(|b| b.is_ascii_whitespace()) {
                     continue;
@@ -713,6 +748,8 @@ fn read_store(dir: &Path) -> std::io::Result<UnifiedStore> {
         entries,
         metadata,
         envelope,
+        stamp: crate::harnesstools::sync::Stamp::of(&folded),
+        modified: newest,
     })
 }
 
@@ -1036,4 +1073,4 @@ impl Message for VibeMessage {
 }
 
 #[cfg(test)]
-mod tests;
+pub(crate) mod tests;

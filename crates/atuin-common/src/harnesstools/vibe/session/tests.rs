@@ -20,7 +20,7 @@ fn mock_env(home: &Path) -> crate::env::MockEnv {
 }
 
 /// Write a legacy session folder `<root>/<folder>/` with `meta.json` and `messages.jsonl`.
-fn write_legacy(root: &Path, folder: &str, meta: &Value, lines: &[Value]) -> PathBuf {
+pub fn write_legacy(root: &Path, folder: &str, meta: &Value, lines: &[Value]) -> PathBuf {
     let dir = root.join(folder);
     std::fs::create_dir_all(&dir).unwrap();
     std::fs::write(dir.join("meta.json"), meta.to_string()).unwrap();
@@ -49,7 +49,7 @@ fn legacy_meta(id: &str) -> Value {
 /// Write a unified store `<root>/unified/<id>/`: `CURRENT` naming `gen0`, whose manifest points
 /// at an inline projection document holding `entries`, a runtime state holding `metadata`, and a
 /// recovery journal holding `journal` records.
-fn write_unified(
+pub fn write_unified(
     root: &Path,
     id: &str,
     entries: &[Value],
