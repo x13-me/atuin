@@ -45,5 +45,7 @@ jobs:
       - uses: actions/checkout@v7
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
+      # atuin-server's integration tests need a live database (ATUIN_DB_URI); they run in the
+      # e2e pipeline, not here.
       - name: Test
-        run: cargo test --workspace
+        run: cargo test --workspace --exclude atuin-server
