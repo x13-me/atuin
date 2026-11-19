@@ -30,10 +30,10 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
-      # rust-toolchain.toml pins the toolchain (1.98.0).
+      # rust-toolchain.toml pins the toolchain (1.98.0); the action installs it without the
+      # components when the file pins an exact version, so add clippy explicitly.
       - uses: dtolnay/rust-toolchain@stable
-        with:
-          components: clippy
+      - run: rustup component add clippy
       - uses: Swatinem/rust-cache@v2
       - name: Clippy
         run: cargo clippy --workspace --all-targets -- -D warnings
