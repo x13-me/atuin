@@ -44,7 +44,8 @@ impl Harness for Vibe {
     }
 
     fn home_vars(&self) -> &'static [&'static str] {
-        &["VIBE_HOME"]
+        // The session root moves the save dir, so the daemon has to inherit it to find sessions.
+        &["VIBE_HOME", "MISTRAL_VIBE_SESSION_ROOT"]
     }
 
     /// Vibe reads `hooks.toml` on each run, so the hooks apply from the next one.
