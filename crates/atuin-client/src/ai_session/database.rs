@@ -1588,6 +1588,7 @@ impl AiSessionDatabase {
             8 => Ok(HarnessKind::Amp),
             9 => Ok(HarnessKind::Kiro),
             10 => Ok(HarnessKind::Hermes),
+            11 => Ok(HarnessKind::Vibe),
             other => Err(DbError::UnknownHarness(other)),
         }
     }

@@ -12,7 +12,7 @@ Connect your agents with one command:
 atuin setup --only --mcp
 ```
 
-This registers the MCP server with every coding agent that setup finds on this machine, such as Amp, Claude Code, Codex, GitHub Copilot CLI (`copilot`), Grok Build (`grok`), Hermes Agent (`hermes`), Kiro CLI, opencode, pi and oh-my-pi (`omp`). An agent counts when its program is on your `PATH` or it has sessions here. To connect only some, name them with `--agents`, as `atuin setup --only --mcp --agents claude-code`.
+This registers the MCP server with every coding agent that setup finds on this machine, such as Amp, Claude Code, Codex, GitHub Copilot CLI (`copilot`), Grok Build (`grok`), Hermes Agent (`hermes`), Kiro CLI, opencode, pi, oh-my-pi (`omp`) and Vibe (`vibe`). An agent counts when its program is on your `PATH` or it has sessions here. To connect only some, name them with `--agents`, as `atuin setup --only --mcp --agents claude-code`.
 
 Then restart the agents you connected. They can now search your shell history.
 

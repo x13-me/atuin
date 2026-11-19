@@ -15,8 +15,8 @@ off, and `atuin setup --only --no-threads` turns it off again.
 
 With `capture = true` under `[threads]`, the Atuin daemon records the
 sessions of your AI coding agents (Claude Code, Codex, Copilot, Grok Build,
-Hermes Agent, Kiro, opencode, Pi and Amp) as threads into the encrypted record
-store, and syncs them like your history.
+Hermes Agent, Kiro, opencode, Pi, Vibe and Amp) as threads into the encrypted
+record store, and syncs them like your history.
 `atuin threads` lists, shows, searches and follows them.
 
 The daemon keeps a local search index of these threads beside the record
@@ -125,6 +125,27 @@ and Atuin says how many it cut. A shell command's result keeps its exit code.
 Atuin still holds the whole session. A session over 10,000 messages, or still over
 5 MiB with every tool output cut, isn't written, and Atuin says which limit
 it's over.
+
+### Vibe
+
+Vibe keeps its sessions under a save dir: `[session_logging].save_dir` in
+`$VIBE_HOME/config.toml`, else `$MISTRAL_VIBE_SESSION_ROOT`, else
+`$VIBE_HOME/logs/session` (by default `~/.vibe/logs/session`). Atuin reads
+both formats Vibe writes there. Current Vibe keeps each session as a
+*unified store*, `unified/<session id>/`: a `CURRENT` file naming the current
+generation and snapshot sequence, a `generations/<gen>/manifest.json` naming
+the projection-state document (inline, or as content-addressed
+`chunks/<sha256>.json` arrays of history entries), the runtime state holding
+the session metadata (`cwd`, `parent_session_id`, `active_model`, ...), and a
+recovery journal whose records fold over the snapshot. Older Vibe 2.x sessions
+are folders, `<prefix>_<hint>_<short id>/` with a `meta.json` and a
+`messages.jsonl`, one message per line. Atuin reads both: messages, tool calls
+and results, reasoning, titles, working directory, git branch, model, turn
+ids, and a subagent's link to the session that spawned it.
+
+`atuin resume` reopens a session with `vibe --resume <id>`, from any
+directory. Atuin writes a session recorded on another machine back out as a
+Vibe 2.x folder under the save dir, which `vibe --resume <id>` still reads.
 
 ## What's captured
 
@@ -466,7 +487,7 @@ From the command line, `atuin resume <id>` resumes a session in its own
 agent directly (an id prefix works too), writing it out from sync first when it
 isn't on this machine, and `atuin resume <id> --in codex` continues it in
 another (`claude-code`, `codex`, `copilot`, `grok`, `hermes`, `kiro`,
-`opencode`, `pi` or `omp`; `claude` is short for `claude-code` wherever Atuin
+`opencode`, `pi`, `omp` or `vibe`; `claude` is short for `claude-code` wherever Atuin
 takes an agent's name, and `kiro-cli` for `kiro`). `atuin resume
 <id> --fork` forks it. It catches the session up with sync as the picker does, and fails
 when that needs a choice, saying which: `--as-is` resumes this copy unchanged,
@@ -513,7 +534,7 @@ mouse = true
 
 To resume an agent's sessions with a command of your own in place of the
 built-in one, give a template per agent under `[threads.resume]` (`claude`,
-`codex`, `copilot`, `grok`, `hermes`, `kiro`, `opencode`, `pi`, `omp` or `amp`). It runs after `cd -- <cwd> &&`, with these
+`codex`, `copilot`, `grok`, `hermes`, `kiro`, `opencode`, `pi`, `omp`, `vibe` or `amp`). It runs after `cd -- <cwd> &&`, with these
 substituted:
 
 - `{id}`: the agent's own id for the session;

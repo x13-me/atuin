@@ -6,7 +6,7 @@ use std::process::Stdio;
 
 use enum_dispatch::enum_dispatch;
 use serde_json::{Value, json};
-use toml_edit::{DocumentMut, Item};
+use toml_edit::{Array, ArrayOfTables, DocumentMut, Item, Table};
 
 use super::Harness;
 use super::amp::{self, Amp};
@@ -19,6 +19,7 @@ use super::hermes::{self, Hermes};
 use super::kiro::{self, Kiro};
 use super::opencode::{self, Opencode};
 use super::pi::{Flavour, Pi};
+use super::vibe::{self, Vibe};
 use crate::atuin_exe;
 use crate::dirs::home_dir;
 use crate::env::var_nonempty;
@@ -359,6 +360,30 @@ impl InstallMcp for Pi {
     }
 }
 
+impl InstallMcp for Vibe {
+    fn mcp_config_path(&self) -> PathBuf {
+        vibe::home().joined("config.toml")
+    }
+
+    /// Atuin writes Vibe's config itself instead of running `vibe mcp add`: the file is plain
+    /// TOML, and writing it keeps the user's comments and other servers as they are.
+    fn mcp_program(&self) -> Option<&'static str> {
+        None
+    }
+
+    async fn install_mcp(&self) -> Result<(), InstallMcpError> {
+        install_vibe(&self.mcp_config_path(), executable().await?).await
+    }
+
+    async fn has_mcp(&self) -> Result<bool, InstallMcpError> {
+        vibe_has_server(&self.mcp_config_path()).await
+    }
+
+    async fn uninstall_mcp(&self) -> Result<bool, InstallMcpError> {
+        remove_vibe_server(&self.mcp_config_path()).await
+    }
+}
+
 /// The config file at `path`, as it is and its path with its links resolved, so that a write goes
 /// where it is. `None` when there's no file.
 async fn read_config(path: &Path) -> Result<Option<(PathBuf, Vec<u8>)>, InstallMcpError> {
@@ -518,6 +543,100 @@ async fn install_kiro(path: &Path, atuin: &str) -> Result<(), InstallMcpError> {
     add_to_config(path, json!({}), "mcpServers", server).await
 }
 
+/// The index of the `atuin` server in the `mcp_servers` array of tables of `doc`.
+fn vibe_server_at(doc: &DocumentMut) -> Option<usize> {
+    doc.get("mcp_servers")?
+        .as_array_of_tables()?
+        .iter()
+        .position(|server| server.get("name").and_then(Item::as_str) == Some("atuin"))
+}
+
+/// Whether the TOML config at `path` has an `atuin` server in its `[[mcp_servers]]` tables, as
+/// `vibe mcp add atuin --transport stdio --command ...` writes them.
+async fn vibe_has_server(path: &Path) -> Result<bool, InstallMcpError> {
+    let Some((_, _, doc)) = read_toml(path).await? else {
+        return Ok(false);
+    };
+    Ok(vibe_server_at(&doc).is_some())
+}
+
+/// Append the stdio server running `atuin mcp` to `doc` as an `[[mcp_servers]]` table named
+/// `atuin`, as `vibe mcp add` writes it.
+fn push_vibe_server(
+    doc: &mut DocumentMut,
+    path: &Path,
+    atuin: &str,
+) -> Result<(), InstallMcpError> {
+    let servers = doc
+        .entry("mcp_servers")
+        .or_insert_with(|| Item::ArrayOfTables(ArrayOfTables::new()))
+        .as_array_of_tables_mut()
+        .ok_or_else(|| InstallMcpError::Malformed(path.to_owned(), "mcp_servers"))?;
+    let mut server = Table::new();
+    server["name"] = toml_edit::value("atuin");
+    server["transport"] = toml_edit::value("stdio");
+    server["command"] = toml_edit::value(atuin);
+    let mut args = Array::new();
+    args.push("mcp");
+    server["args"] = Item::Value(toml_edit::Value::Array(args));
+    servers.push(server);
+    Ok(())
+}
+
+/// Add the server to Vibe's config at `path`, replacing one already there and keeping the rest of
+/// the file, as `vibe mcp add` does.
+async fn install_vibe(path: &Path, atuin: &str) -> Result<(), InstallMcpError> {
+    // A config linked from a dotfiles repo is saved there, keeping the link.
+    let path =
+        &AbsPathBuf::canonicalize_async(path).await.map_or_else(|_| path.to_owned(), PathBuf::from);
+    match read_toml(path).await? {
+        Some((path, read, mut doc)) => {
+            if let Some(at) = vibe_server_at(&doc) {
+                doc.get_mut("mcp_servers")
+                    .and_then(Item::as_array_of_tables_mut)
+                    .expect("vibe_server_at found it")
+                    .remove(at);
+            }
+            push_vibe_server(&mut doc, &path, atuin)?;
+            rewrite_config(&path, &read, &doc.to_string())?;
+            crate::userio::log::info!("mcp-server-added", path = path.display().to_string());
+            Ok(())
+        }
+        None => {
+            let mut doc = DocumentMut::new();
+            push_vibe_server(&mut doc, path, atuin)?;
+            if let Some(parent) = path.parent() {
+                tokio::fs::create_dir_all(parent).await?;
+            }
+            crate::fs::write_new(path, doc.to_string().as_bytes())?;
+            crate::userio::log::info!("mcp-server-added", path = path.display().to_string());
+            Ok(())
+        }
+    }
+}
+
+/// Take the `atuin` server out of the `mcp_servers` array of tables in Vibe's config at `path`,
+/// keeping the rest of the file as it is. `false` when there was none.
+async fn remove_vibe_server(path: &Path) -> Result<bool, InstallMcpError> {
+    let Some((path, read, mut doc)) = read_toml(path).await? else {
+        return Ok(false);
+    };
+    let Some(at) = vibe_server_at(&doc) else {
+        return Ok(false);
+    };
+    let servers = doc
+        .get_mut("mcp_servers")
+        .and_then(Item::as_array_of_tables_mut)
+        .expect("vibe_server_at found it");
+    servers.remove(at);
+    if servers.is_empty() {
+        doc.remove("mcp_servers");
+    }
+    rewrite_config(&path, &read, &doc.to_string())?;
+    crate::userio::log::info!("mcp-server-removed", path = path.display().to_string());
+    Ok(true)
+}
+
 /// Add `server` as `atuin` to the `key` object of the JSON config at `path`, `new` when there is
 /// none yet.
 async fn add_to_config(
@@ -594,6 +713,7 @@ mod tests {
     #[case("kiro")]
     #[case("opencode")]
     #[case("omp")]
+    #[case("vibe")]
     #[tokio::test]
     async fn a_server_atuin_writes_comes_out_as_it_went_in(
         agent_home: (tempfile::TempDir, MockEnv),
@@ -662,6 +782,52 @@ mod tests {
         assert!(!harness.has_mcp().await.unwrap());
     }
 
+    /// Vibe's array-of-tables config keeps its comments and other servers.
+    #[rstest]
+    #[tokio::test]
+    async fn unregistering_keeps_the_rest_of_vibes_config(
+        agent_home: (tempfile::TempDir, MockEnv),
+    ) {
+        let (dir, _env) = agent_home;
+        let path = dir.path().join(".vibe/config.toml");
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        let config = "# mine\nmodel = \"devstral-2\"\n\n[[mcp_servers]]\nname = \"atuin\"\ntransport = \"stdio\"\ncommand = \"atuin\"\nargs = [\"mcp\"]\n\n[[mcp_servers]]\nname = \"other\"\nurl = \"https://x.test/mcp\"\n";
+        std::fs::write(&path, config).unwrap();
+        let harness = AnyHarness::from_name("vibe").unwrap();
+
+        assert!(harness.has_mcp().await.unwrap());
+        assert!(harness.uninstall_mcp().await.unwrap());
+        let left = std::fs::read_to_string(&path).unwrap();
+        assert_eq!(
+            left,
+            "# mine\nmodel = \"devstral-2\"\n\n[[mcp_servers]]\nname = \"other\"\nurl = \"https://x.test/mcp\"\n"
+        );
+        assert!(!harness.has_mcp().await.unwrap());
+    }
+
+    /// Vibe gets a new config with the server as `vibe mcp add` writes it.
+    #[rstest]
+    #[tokio::test]
+    async fn vibe_gets_a_new_config() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join(".vibe").join("config.toml");
+
+        install_vibe(&path, "/bin/atuin").await.unwrap();
+        install_vibe(&path, "/opt/atuin").await.unwrap();
+
+        let doc = std::fs::read_to_string(&path).unwrap().parse::<DocumentMut>().unwrap();
+        let servers = doc["mcp_servers"].as_array_of_tables().unwrap();
+        assert_eq!(servers.len(), 1, "a rerun replaces, not duplicates");
+        let server = servers.get(0).unwrap();
+        assert_eq!(server["name"].as_str().unwrap(), "atuin");
+        assert_eq!(server["transport"].as_str().unwrap(), "stdio");
+        assert_eq!(server["command"].as_str().unwrap(), "/opt/atuin");
+        assert_eq!(
+            server["args"].as_array().unwrap().iter().next().unwrap().as_str().unwrap(),
+            "mcp"
+        );
+    }
+
     /// Without `hermes` to take its server out, Hermes's is left to the user, as atuin can't write
     /// its config back with its comments.
     #[rstest]
@@ -696,6 +862,7 @@ mod tests {
     #[case("opencode", ".config/opencode/opencode.json")]
     #[case("pi", ".pi/agent/mcp.json")]
     #[case("omp", ".omp/agent/mcp.json")]
+    #[case("vibe", ".vibe/config.toml")]
     fn detects_existing_config_files(
         agent_home: (tempfile::TempDir, MockEnv),
         #[case] name: &str,
@@ -724,6 +891,7 @@ mod tests {
     #[case("opencode", "XDG_CONFIG_HOME", "opencode/opencode.json")]
     #[case("pi", "PI_CODING_AGENT_DIR", "mcp.json")]
     #[case("omp", "PI_CODING_AGENT_DIR", "mcp.json")]
+    #[case("vibe", "VIBE_HOME", "config.toml")]
     fn detection_respects_config_overrides(
         agent_home: (tempfile::TempDir, MockEnv),
         #[case] name: &str,

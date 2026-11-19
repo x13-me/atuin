@@ -1,6 +1,6 @@
 # AI Agent Hooks
 
-Atuin can capture commands run by AI coding agents (like Claude Code, Codex, Copilot, Grok Build, Hermes Agent, Kiro CLI, opencode, pi, and omp) alongside your regular shell history. Atuin tags each command with the agent that ran it, so you can filter your history by author.
+Atuin can capture commands run by AI coding agents (like Claude Code, Codex, Copilot, Grok Build, Hermes Agent, Kiro CLI, opencode, pi, omp, and Vibe) alongside your regular shell history. Atuin tags each command with the agent that ran it, so you can filter your history by author.
 
 ## Quick Start
 
@@ -36,13 +36,14 @@ When setup installs an agent's hooks, it writes the agent's config file or exten
 | opencode | `~/.config/opencode/plugins/atuin.ts` |
 | pi | `~/.pi/agent/extensions/atuin.ts` |
 | omp | `~/.omp/agent/extensions/atuin.ts` |
+| Vibe | `$VIBE_HOME/hooks.toml` (by default `~/.vibe/hooks.toml`) |
 
 The hook lifecycle:
 
 1. **PreToolUse** -- the agent is about to run a Bash command. Atuin records the command, working directory, and timestamp (same as `history start`).
 2. **PostToolUse / PostToolUseFailure** -- the command finished. Atuin records the exit code and duration (same as `history end`).
 
-Atuin only captures shell tool invocations (`Bash`, Kiro's `execute_bash`, or Hermes's `terminal`). It ignores other tool types (file writes, web fetches, etc.).
+Atuin only captures shell tool invocations (`Bash`, Kiro's `execute_bash`, Vibe's `bash`, or Hermes's `terminal`). It ignores other tool types (file writes, web fetches, etc.).
 
 Agents that load extensions rather than shelling out to a hook command -- opencode, pi and omp -- call `atuin history start` and `atuin history end` directly instead, but record the same thing. Hermes loads a plugin too, which passes Hermes's own events to `atuin hook hermes`.
 
@@ -78,7 +79,7 @@ atuin search -- ''
 atuin search --author '$all-agent' -- ''
 ```
 
-Currently recognized agent names are: `amp`, `claude-code`, `codex`, `copilot`, `grok`, `hermes`, `kiro`, `omp`, `opencode`, and `pi`.
+Currently recognized agent names are: `amp`, `claude-code`, `codex`, `copilot`, `grok`, `hermes`, `kiro`, `omp`, `opencode`, `pi`, and `vibe`.
 
 ## Supported Agents
 
@@ -161,6 +162,16 @@ omp, or oh-my-pi, is a fork of pi. The install writes the same extension as pi's
 
 Then restart omp. The extension records every `bash` tool command with author `omp`.
 
+### Vibe
+
+The install adds two `[[hooks]]` entries to `$VIBE_HOME/hooks.toml` (by default `~/.vibe/hooks.toml`), one of type `pre_tool` and one of type `post_tool`, both matching the `bash` tool and running `atuin hook vibe` with the event as JSON on `stdin`. Your own hooks in the file are left as they are.
+
+Vibe reads `hooks.toml` on each run, so the hooks apply from Vibe's next run — no restart of a running session needed beyond that. Vibe names its shell tool `file_system.bash`, and the `match = "bash"` the install writes also accepts the short name.
+
+On `pre_tool`, Atuin records the command from the event's `tool_input.command`, tagged with author `vibe`, in the event's `cwd`. On `post_tool`, it closes the entry with the exit code from the event's `tool_output.exit_code`; when the tool failed (`tool_status` `failure`, `tool_output` null), it uses the exit code its `tool_error` starts with, else 1. A command Vibe starts in the background goes through its `process_start` tool instead, which the hooks don't match, so it isn't recorded. Start and end are correlated by the event's `tool_call_id` (by the session and command text if Vibe sends none).
+
+The MCP install adds Atuin's server to `$VIBE_HOME/config.toml` (by default `~/.vibe/config.toml`) as an `[[mcp_servers]]` table named `atuin` with `transport = "stdio"`, leaving the rest of the file as it is.
+
 ## Verifying Installation
 
 After installing hooks and restarting your agent, run a command through the agent and then check your history:
@@ -199,6 +210,9 @@ ls ~/.pi/agent/extensions/atuin.ts
 
 # omp
 ls ~/.omp/agent/extensions/atuin.ts
+
+# Vibe
+cat ~/.vibe/hooks.toml | grep atuin
 ```
 
 ## Re-installing

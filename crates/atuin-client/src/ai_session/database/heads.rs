@@ -133,7 +133,9 @@ impl Model {
                 beside: false,
             },
             HarnessKind::Opencode => Self::Interleaving,
-            HarnessKind::Unknown => Self::Linear,
+            // Vibe's rows carry no parent link (a fork is a new session naming its parent in its
+            // metadata), so a session's rows are one linear chain.
+            HarnessKind::Vibe | HarnessKind::Unknown => Self::Linear,
         }
     }
 }

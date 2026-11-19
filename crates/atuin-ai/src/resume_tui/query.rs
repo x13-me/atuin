@@ -65,6 +65,7 @@ pub fn parse_harness(s: &str) -> Option<HarnessKind> {
         "amp" | "am" => Some(HarnessKind::Amp),
         "kiro" | "kiro-cli" | "ki" => Some(HarnessKind::Kiro),
         "hermes" | "hermes-agent" | "he" => Some(HarnessKind::Hermes),
+        "vibe" | "vb" => Some(HarnessKind::Vibe),
         _ => None,
     }
 }

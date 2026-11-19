@@ -23,6 +23,7 @@ pub mod rehydrate;
 pub mod resume;
 pub mod session;
 pub mod sync;
+pub mod vibe;
 
 use amp::Amp;
 use ccode::Ccode;
@@ -40,6 +41,7 @@ use session::any::{AnySessions, ObservableExt};
 use sync::{
     AppendOptions, AppendOutcome, Liveness, LocalTip, ReplaceOutcome, SessionSync, SyncError,
 };
+use vibe::Vibe;
 
 use crate::sync::BlockingPool;
 
@@ -159,6 +161,7 @@ pub enum AnyHarness {
     Kiro(Kiro),
     Opencode(Opencode),
     Pi(Pi),
+    Vibe(Vibe),
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -269,6 +272,7 @@ impl AnyHarness {
             Self::Opencode(Opencode),
             Self::Pi(Pi::PI),
             Self::Pi(Pi::OMP),
+            Self::Vibe(Vibe),
         ]
     }
 }
@@ -295,6 +299,7 @@ mod tests {
     #[case("kiro")]
     #[case("pi")]
     #[case("omp")]
+    #[case("vibe")]
     #[tokio::test]
     async fn hooks_come_out_as_they_went_in(#[case] name: &str) {
         let home = tempfile::tempdir().unwrap();

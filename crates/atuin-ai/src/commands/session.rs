@@ -152,6 +152,7 @@ pub enum HarnessArg {
     Pi,
     Omp,
     Amp,
+    Vibe,
 }
 
 impl From<HarnessArg> for HarnessKind {
@@ -167,6 +168,7 @@ impl From<HarnessArg> for HarnessKind {
             HarnessArg::Pi => Self::Pi,
             HarnessArg::Omp => Self::Omp,
             HarnessArg::Amp => Self::Amp,
+            HarnessArg::Vibe => Self::Vibe,
         }
     }
 }
@@ -1210,6 +1212,7 @@ fn harness_color(harness: HarnessKind) -> Ansi {
         HarnessKind::Pi => Ansi::Yellow,
         HarnessKind::Omp => Ansi::Red,
         HarnessKind::Amp => Ansi::Green,
+        HarnessKind::Vibe => Ansi::Magenta,
         HarnessKind::Unknown => Ansi::Dim,
     }
 }
@@ -1283,6 +1286,7 @@ pub fn harness_name(harness: HarnessKind) -> &'static str {
         HarnessKind::Pi => "pi",
         HarnessKind::Omp => "omp",
         HarnessKind::Amp => "amp",
+        HarnessKind::Vibe => "vibe",
         HarnessKind::Unknown => "unknown",
     }
 }
@@ -2100,6 +2104,7 @@ mod tests {
     #[case(HarnessArg::Codex, HarnessKind::Codex)]
     #[case(HarnessArg::Opencode, HarnessKind::Opencode)]
     #[case(HarnessArg::Pi, HarnessKind::Pi)]
+    #[case(HarnessArg::Vibe, HarnessKind::Vibe)]
     fn harness_arg_maps_to_pb(#[case] arg: HarnessArg, #[case] expected: HarnessKind) {
         assert_eq!(HarnessKind::from(arg), expected);
     }

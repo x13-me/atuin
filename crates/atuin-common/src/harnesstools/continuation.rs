@@ -448,7 +448,8 @@ impl Rows {
             | AnyHarness::Pi(_)
             | AnyHarness::Copilot(_)
             | AnyHarness::Grok(_)
-            | AnyHarness::Hermes(_) => {
+            | AnyHarness::Hermes(_)
+            | AnyHarness::Vibe(_) => {
                 let content = text.into_iter().chain(calls.into_iter().map(Content::ToolUse));
                 self.push(at, Role::Assistant, content.collect(), calling);
                 if matches!(self.target, AnyHarness::ClaudeCode(_)) {
@@ -784,9 +785,10 @@ impl Ids {
                 let stamp = self.now.strftime("%Y%m%d_%H%M%S");
                 format!("{stamp}_{}", &Uuid::new_v4().as_simple().to_string()[..6])
             }
-            AnyHarness::Amp(_) | AnyHarness::ClaudeCode(_) | AnyHarness::Copilot(_) => {
-                Uuid::new_v4().to_string()
-            }
+            AnyHarness::Amp(_)
+            | AnyHarness::ClaudeCode(_)
+            | AnyHarness::Copilot(_)
+            | AnyHarness::Vibe(_) => Uuid::new_v4().to_string(),
             AnyHarness::Kiro(_) => format!("sess_{}", Uuid::new_v4()),
             AnyHarness::Codex(_) | AnyHarness::Grok(_) | AnyHarness::Pi(_) => {
                 Uuid::now_v7().to_string()
@@ -811,7 +813,8 @@ impl Ids {
                 | AnyHarness::ClaudeCode(_)
                 | AnyHarness::Copilot(_)
                 | AnyHarness::Grok(_)
-                | AnyHarness::Kiro(_) => Uuid::new_v4().to_string(),
+                | AnyHarness::Kiro(_)
+                | AnyHarness::Vibe(_) => Uuid::new_v4().to_string(),
                 AnyHarness::Codex(_) => format!("syn-{}", Uuid::new_v4().as_simple()),
                 AnyHarness::Opencode(_) => {
                     opencode::rehydrate::mint_part(at, &Uuid::new_v4().to_string())
