@@ -133,7 +133,8 @@ impl Model {
                 beside: false,
             },
             HarnessKind::Opencode => Self::Interleaving,
-            HarnessKind::Unknown => Self::Linear,
+            // Vibe's transcripts are not read, so no rows of its are projected.
+            HarnessKind::Vibe | HarnessKind::Unknown => Self::Linear,
         }
     }
 }

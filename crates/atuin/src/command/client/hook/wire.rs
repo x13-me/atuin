@@ -8,6 +8,8 @@
 //! `Exit Code: <n>`, its shell tool is `execute_bash`, and it names no `tool_use_id` either.
 //!
 //! Hermes Agent sends a shape of its own, through atuin's Hermes plugin: see [`WireHermesEvent`].
+//! Vibe CLI sends `snake_case` event names with `tool_call_id` and a structured `tool_output`:
+//! see [`WireVibeEvent`].
 
 use std::path::PathBuf;
 
@@ -159,6 +161,81 @@ impl WireToolResult {
         let code = tail.strip_suffix('>')?.rsplit("completed with exit code ").next()?;
         code.trim().parse().ok()
     }
+}
+
+/// A Vibe CLI tool hook event, as Vibe runs a `[[hooks]]` entry's command with it on `stdin`:
+/// the session context plus the fields of its `hook_event_name`. Only `pre_tool` and `post_tool`
+/// on the shell tool are modeled; `duration_ms` is not read (Vibe reports it as always `0`).
+#[derive(Debug, Deserialize)]
+pub struct WireVibeEvent {
+    pub hook_event_name: VibeEventName,
+    /// The full tool name, such as `file_system.bash` for the shell tool; the `match` in
+    /// `hooks.toml` also accepts its short name `bash`.
+    pub tool_name: String,
+    /// Correlates a command's start and end across the two hook invocations.
+    #[serde(default)]
+    pub tool_call_id: Option<String>,
+    #[serde(default)]
+    pub session_id: Option<String>,
+    /// The tool's arguments; for `bash`, `{"command": ..., "timeout": ...}`.
+    #[serde(default)]
+    pub tool_input: Option<WireVibeToolInput>,
+    /// `success` or `failure`, on `post_tool`. A shell command that exits non-zero still counts
+    /// as `success`.
+    #[serde(default)]
+    pub tool_status: Option<String>,
+    /// The tool's structured result, `null` on failure; for `bash`, an object with the command,
+    /// its output and its `exit_code` (also as the deprecated alias `returncode`).
+    #[serde(default)]
+    pub tool_output: Option<Value>,
+    /// Why the tool failed, on `post_tool` with `tool_status` `failure`.
+    #[serde(default)]
+    pub tool_error: Option<String>,
+    #[serde(default)]
+    pub transcript_path: Option<PathBuf>,
+    /// Where the command runs.
+    #[serde(default)]
+    pub cwd: Option<PathBuf>,
+}
+
+impl WireVibeEvent {
+    /// Whether the tool is Vibe's shell tool: its short name is `bash` (the full name
+    /// `file_system.bash`), not an MCP tool (`mcp_<server>.<tool>`) and not `process_start`,
+    /// which starts a command in the background.
+    pub fn is_bash(&self) -> bool {
+        !self.tool_name.starts_with("mcp_")
+            && self
+                .tool_name
+                .rsplit('.')
+                .next()
+                .is_some_and(|short| short.eq_ignore_ascii_case("bash"))
+    }
+
+    /// The exit code the tool's structured result reports, when it does.
+    pub fn exit_code(&self) -> Option<i64> {
+        let output = self.tool_output.as_ref()?;
+        output.get("exit_code").or_else(|| output.get("returncode")).and_then(Value::as_i64)
+    }
+}
+
+/// See [`WireVibeEvent::hook_event_name`]: the `type` of the `[[hooks]]` entry that ran.
+/// Unrecognized values map to [`VibeEventName::Other`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum VibeEventName {
+    PreTool,
+    PostTool,
+    #[serde(other)]
+    Other,
+}
+
+/// See [`WireVibeEvent::tool_input`].
+#[derive(Debug, Deserialize)]
+pub struct WireVibeToolInput {
+    #[serde(default)]
+    pub command: Option<NonNulStr>,
+    #[serde(default)]
+    pub description: Option<String>,
 }
 
 /// A Hermes Agent tool call, as atuin's Hermes plugin sends it: the keyword arguments Hermes

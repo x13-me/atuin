@@ -524,7 +524,7 @@ impl Canonical {
 /// The key a file tool of `target` names its file by.
 const fn path_key(target: AnyHarness) -> &'static str {
     match target {
-        AnyHarness::ClaudeCode(_) | AnyHarness::Grok(_) => "file_path",
+        AnyHarness::ClaudeCode(_) | AnyHarness::Grok(_) | AnyHarness::Vibe(_) => "file_path",
         AnyHarness::Opencode(_) => "filePath",
         AnyHarness::Amp(_)
         | AnyHarness::Codex(_)
@@ -721,6 +721,29 @@ fn native(target: AnyHarness, name: &str) -> bool {
             "introspect",
             "knowledge",
             "disclose_context",
+        ],
+        // Vibe's builtin tools by short name (`file_system.<name>`); `process_*` start and read
+        // background processes, `agents_spawn` starts a subagent.
+        AnyHarness::Vibe(_) => &[
+            "bash",
+            "read_file",
+            "write_file",
+            "edit",
+            "grep",
+            "web_fetch",
+            "web_search",
+            "ask_user_question",
+            "skill",
+            "task",
+            "todo",
+            "process_start",
+            "process_output",
+            "process_write_text",
+            "process_write_control",
+            "process_write_bytes",
+            "process_list",
+            "process_stop",
+            "agents_spawn",
         ],
     };
     names.contains(&name.to_ascii_lowercase().as_str())

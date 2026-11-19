@@ -32,6 +32,7 @@ pub enum HarnessKind {
     Amp = 8,
     Kiro = 9,
     Hermes = 10,
+    Vibe = 11,
     /// No harness atuin knows: unstated, or one a newer atuin added, whose records name it.
     #[serde(other)]
     Unknown = 0,
@@ -52,6 +53,7 @@ impl From<&AnyHarness> for HarnessKind {
                 Flavour::Pi => Self::Pi,
                 Flavour::Omp => Self::Omp,
             },
+            AnyHarness::Vibe(_) => Self::Vibe,
         }
     }
 }
@@ -62,7 +64,7 @@ impl HarnessKind {
     #[must_use]
     pub fn harness(self) -> Option<AnyHarness> {
         use atuin_common::harnesstools::{
-            amp, ccode, codex, copilot, grok, hermes, kiro, opencode, pi,
+            amp, ccode, codex, copilot, grok, hermes, kiro, opencode, pi, vibe,
         };
         match self {
             Self::Amp => Some(AnyHarness::Amp(amp::Amp)),
@@ -75,6 +77,7 @@ impl HarnessKind {
             Self::Opencode => Some(AnyHarness::Opencode(opencode::Opencode)),
             Self::Pi => Some(AnyHarness::Pi(pi::Pi::PI)),
             Self::Omp => Some(AnyHarness::Pi(pi::Pi::OMP)),
+            Self::Vibe => Some(AnyHarness::Vibe(vibe::Vibe)),
             Self::Unknown => None,
         }
     }

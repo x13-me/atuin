@@ -11,8 +11,8 @@ use serde_json::error::Category;
 use time::OffsetDateTime;
 
 use super::wire::{
-    HermesEventName, HermesTerminalOutcome, HermesToolName, HookEventName, WireHermesEvent,
-    WireHookEvent, WireToolName,
+    HermesEventName, HermesTerminalOutcome, HermesToolName, HookEventName, VibeEventName,
+    WireHermesEvent, WireHookEvent, WireToolName, WireVibeEvent,
 };
 use crate::i18n::fl;
 
@@ -74,6 +74,9 @@ const KIRO: &str = "kiro";
 
 /// The harness whose events come in a shape of their own, [`WireHermesEvent`].
 const HERMES: &str = "hermes";
+
+/// The harness whose events come in Vibe's shape, [`WireVibeEvent`].
+const VIBE: &str = "vibe";
 
 impl HookEvent {
     /// Reduce a decoded wire event from `harness` (the name `atuin hook` was given) to a
@@ -191,6 +194,56 @@ impl HookEvent {
     }
 }
 
+impl HookEvent {
+    /// [`Self::reduce`] for Vibe's events: `pre_tool`/`post_tool` on its `bash` tool, correlated
+    /// by `tool_call_id` (by the session and command when Vibe sends none). Other tools and
+    /// event types are not cared about; a command started in the background goes through
+    /// `process_start`, which the installed hooks don't match. Vibe reports no duration
+    /// (`duration_ms` is always `0`), so an end's runs until the event arrives.
+    fn reduce_vibe(wire: WireVibeEvent) -> Option<Self> {
+        if !wire.is_bash() {
+            return None;
+        }
+
+        let input = wire.tool_input.as_ref();
+        let command = input.and_then(|input| input.command.clone());
+        let tool_use_id = match wire.tool_call_id.as_deref().filter(|id| !id.is_empty()) {
+            Some(id) => id.to_owned(),
+            None => correlation_key(wire.session_id.as_deref()?, command.as_deref()?),
+        };
+
+        match wire.hook_event_name {
+            VibeEventName::PreTool => {
+                // A missing or empty command has nothing to record.
+                let command = command.filter(|command| !command.is_empty())?;
+                Some(HookEvent::Start {
+                    command,
+                    intent: input.and_then(|input| input.description.clone()),
+                    tool_use_id,
+                    cwd: wire.cwd,
+                    at: None,
+                })
+            }
+            VibeEventName::PostTool => {
+                // A failed tool reports no output; like a PostToolUseFailure, its exit code is
+                // its error's when that says one, else 1.
+                let exit = wire.exit_code().or_else(|| {
+                    (wire.tool_status.as_deref() == Some("failure")).then(|| {
+                        wire.tool_error.as_deref().and_then(failure_exit_code).unwrap_or(1)
+                    })
+                });
+                Some(HookEvent::End {
+                    tool_use_id,
+                    exit,
+                    transcript: wire.transcript_path,
+                    duration: None,
+                })
+            }
+            VibeEventName::Other => None,
+        }
+    }
+}
+
 /// What stands in for a `tool_use_id` an agent (Copilot, Kiro) doesn't send: the session and
 /// the command, which both the start and the end of a call carry. Two identical commands running
 /// at once in one session share a key, and the second to end closes the first's entry. Hermes's
@@ -206,8 +259,8 @@ fn failure_exit_code(error: &str) -> Option<i64> {
 
 impl HookEvent {
     /// Parse a raw hook payload (the JSON `harness` writes to stdin) into a [`HookEvent`], or
-    /// `None` when there is nothing to record. The harness name decides only what a bare
-    /// `tool_response` says (see [`Self::reduce`]).
+    /// `None` when there is nothing to record. The harness name picks the wire shape (Hermes's
+    /// and Vibe's are their own) and what a bare `tool_response` says (see [`Self::reduce`]).
     ///
     /// Well-formed JSON that doesn't fit the hook-event schema yields `Ok(None)`.
     ///
@@ -217,6 +270,7 @@ impl HookEvent {
     pub fn from_json_str(input: &str, harness: &str) -> Result<Option<Self>, ParseError> {
         let parsed = match harness {
             HERMES => serde_json::from_str::<WireHermesEvent>(input).map(Self::reduce_hermes),
+            VIBE => serde_json::from_str::<WireVibeEvent>(input).map(Self::reduce_vibe),
             _ => {
                 serde_json::from_str::<WireHookEvent>(input).map(|wire| Self::reduce(wire, harness))
             }
@@ -705,6 +759,156 @@ mod tests {
     )]
     fn parses_kiro_event(#[case] input: serde_json::Value, #[case] expected: Option<HookEvent>) {
         assert_eq!(HookEvent::from_json_str(&input.to_string(), "kiro").unwrap(), expected);
+    }
+
+    /// A Vibe payload's session context, as every one carries it.
+    fn vibe_context(event: &serde_json::Value) -> serde_json::Value {
+        let mut payload = json!({
+            "session_id": "a1b2c3d4",
+            "parent_session_id": null,
+            "transcript_path": "/home/u/.vibe/logs/session/a1b2c3d4.jsonl",
+            "cwd": "/w",
+        });
+        payload.as_object_mut().unwrap().extend(event.as_object().unwrap().clone());
+        payload
+    }
+
+    #[rstest]
+    #[case::pre_tool(
+        vibe_context(&json!({
+            "hook_event_name": "pre_tool",
+            "tool_name": "file_system.bash",
+            "tool_call_id": "call-1",
+            "tool_input": {"command": "cargo test", "timeout": 120},
+        })),
+        Some(HookEvent::Start {
+            command: non_nul("cargo test"),
+            intent: None,
+            tool_use_id: "call-1".into(),
+            cwd: Some("/w".into()),
+            at: None,
+        })
+    )]
+    // The short tool name works too.
+    #[case::pre_tool_short_tool_name(
+        vibe_context(&json!({
+            "hook_event_name": "pre_tool",
+            "tool_name": "bash",
+            "tool_call_id": "call-1",
+            "tool_input": {"command": "ls"},
+        })),
+        Some(HookEvent::Start {
+            command: non_nul("ls"),
+            intent: None,
+            tool_use_id: "call-1".into(),
+            cwd: Some("/w".into()),
+            at: None,
+        })
+    )]
+    #[case::post_tool(
+        vibe_context(&json!({
+            "hook_event_name": "post_tool",
+            "tool_name": "file_system.bash",
+            "tool_call_id": "call-1",
+            "tool_input": {"command": "cargo test"},
+            "tool_status": "success",
+            "tool_output": {"command": "cargo test", "shell": "bash", "exit_code": 2, "stdout": "", "stderr": "FAILED", "returncode": 2},
+            "tool_output_text": "FAILED",
+            "tool_error": null,
+            "duration_ms": 0,
+        })),
+        Some(HookEvent::End {
+            tool_use_id: "call-1".into(),
+            exit: Some(2),
+            transcript: Some("/home/u/.vibe/logs/session/a1b2c3d4.jsonl".into()),
+            duration: None,
+        })
+    )]
+    // A failed tool reports no output; its error's exit code, else 1.
+    #[case::post_tool_failure_with_exit_in_its_error(
+        vibe_context(&json!({
+            "hook_event_name": "post_tool",
+            "tool_name": "file_system.bash",
+            "tool_call_id": "call-2",
+            "tool_input": {"command": "ls /nope"},
+            "tool_status": "failure",
+            "tool_output": null,
+            "tool_error": "Exit code 2\nls: cannot access '/nope'",
+        })),
+        Some(HookEvent::End { tool_use_id: "call-2".into(), exit: Some(2), transcript: Some("/home/u/.vibe/logs/session/a1b2c3d4.jsonl".into()), duration: None })
+    )]
+    #[case::post_tool_failure_without_exit_in_its_error(
+        vibe_context(&json!({
+            "hook_event_name": "post_tool",
+            "tool_name": "file_system.bash",
+            "tool_call_id": "call-3",
+            "tool_input": {"command": "make"},
+            "tool_status": "failure",
+            "tool_output": null,
+            "tool_error": "timed out",
+        })),
+        Some(HookEvent::End { tool_use_id: "call-3".into(), exit: Some(1), transcript: Some("/home/u/.vibe/logs/session/a1b2c3d4.jsonl".into()), duration: None })
+    )]
+    // A command started in the background goes through `process_start`: not recorded.
+    #[case::process_start_skipped(
+        vibe_context(&json!({
+            "hook_event_name": "pre_tool",
+            "tool_name": "process_start",
+            "tool_call_id": "call-4",
+            "tool_input": {"command": "npm run dev"},
+        })),
+        None
+    )]
+    // Nor is any other tool, nor an MCP tool whose short name happens to be `bash`.
+    #[case::read_skipped(
+        vibe_context(&json!({
+            "hook_event_name": "pre_tool",
+            "tool_name": "file_system.read",
+            "tool_call_id": "call-5",
+            "tool_input": {"file_path": "/w/x"},
+        })),
+        None
+    )]
+    #[case::mcp_tool_skipped(
+        vibe_context(&json!({
+            "hook_event_name": "pre_tool",
+            "tool_name": "mcp_some.bash",
+            "tool_call_id": "call-6",
+            "tool_input": {"command": "ls"},
+        })),
+        None
+    )]
+    // Lifecycle events other than tool calls are not recorded.
+    #[case::session_start_skipped(
+        vibe_context(&json!({"hook_event_name": "session_start", "source": "startup"})),
+        None
+    )]
+    // Without a call id, the session and command correlate the start with the end.
+    #[case::no_call_id_correlates_by_session_and_command(
+        vibe_context(&json!({
+            "hook_event_name": "pre_tool",
+            "tool_name": "bash",
+            "tool_input": {"command": "echo hi"},
+        })),
+        Some(HookEvent::Start {
+            command: non_nul("echo hi"),
+            intent: None,
+            tool_use_id: correlation_key("a1b2c3d4", "echo hi"),
+            cwd: Some("/w".into()),
+            at: None,
+        })
+    )]
+    #[case::empty_command_skipped(
+        vibe_context(&json!({
+            "hook_event_name": "pre_tool",
+            "tool_name": "bash",
+            "tool_call_id": "call-7",
+            "tool_input": {"command": ""},
+        })),
+        None
+    )]
+    fn parses_vibe_event(#[case] input: serde_json::Value, #[case] expected: Option<HookEvent>) {
+        assert_eq!(HookEvent::from_json_str(&input.to_string(), "vibe").unwrap(), expected);
     }
 
     /// The session the Hermes cases below ran in, a gateway-made id (Hermes v0.23.0).

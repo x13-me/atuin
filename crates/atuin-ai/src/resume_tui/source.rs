@@ -336,6 +336,7 @@ pub fn harness_badge(harness: HarnessKind) -> &'static str {
         HarnessKind::Amp => "AM",
         HarnessKind::Kiro => "KI",
         HarnessKind::Hermes => "HE",
+        HarnessKind::Vibe => "VB",
         HarnessKind::Unknown => "??",
     }
 }
@@ -352,7 +353,9 @@ pub fn harness_arg(harness: HarnessKind) -> Option<&'static str> {
         HarnessKind::Copilot => Some("copilot"),
         HarnessKind::Kiro => Some("kiro"),
         HarnessKind::Hermes => Some("hermes"),
-        HarnessKind::Amp | HarnessKind::Unknown => None,
+        // Atuin can't write a Vibe transcript to continue a session in, only `vibe --resume` one
+        // of Vibe's own.
+        HarnessKind::Vibe | HarnessKind::Amp | HarnessKind::Unknown => None,
     }
 }
 
@@ -369,6 +372,7 @@ pub fn harness_label(harness: HarnessKind) -> &'static str {
         HarnessKind::Amp => "Amp",
         HarnessKind::Kiro => "Kiro",
         HarnessKind::Hermes => "Hermes Agent",
+        HarnessKind::Vibe => "Vibe",
         HarnessKind::Unknown => "unknown",
     }
 }

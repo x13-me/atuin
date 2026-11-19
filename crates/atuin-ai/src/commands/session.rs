@@ -1212,6 +1212,7 @@ fn harness_color(harness: HarnessKind) -> Ansi {
         HarnessKind::Pi => Ansi::Yellow,
         HarnessKind::Omp => Ansi::Red,
         HarnessKind::Amp => Ansi::Green,
+        HarnessKind::Vibe => Ansi::Magenta,
         HarnessKind::Unknown => Ansi::Dim,
     }
 }
@@ -1288,6 +1289,7 @@ pub fn harness_name(harness: HarnessKind) -> &'static str {
         HarnessKind::Pi => "pi",
         HarnessKind::Omp => "omp",
         HarnessKind::Amp => "amp",
+        HarnessKind::Vibe => "vibe",
         HarnessKind::Unknown => "unknown",
     }
 }

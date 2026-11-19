@@ -97,6 +97,7 @@ pub async fn recorded(source: AnyHarness) -> RehydrateSession {
 async fn read(source: AnyHarness) -> RehydrateSession {
     match source {
         AnyHarness::Amp(_) => unreachable!("Amp keeps no transcript to read"),
+        AnyHarness::Vibe(_) => unreachable!("Vibe's transcripts are not read"),
         AnyHarness::Hermes(_) => {
             let dir = tempfile::tempdir().unwrap();
             let db = hermes::session::tests::probe_store(dir.path()).await;
@@ -221,6 +222,7 @@ fn assert_ids(target: AnyHarness, session: &RehydrateSession) {
     let uuid = |s: &str| Uuid::parse_str(s).is_ok();
     match target {
         AnyHarness::Amp(_) => unreachable!("atuin writes no Amp threads"),
+        AnyHarness::Vibe(_) => unreachable!("atuin writes no Vibe transcripts"),
         // `YYYYMMDD_HHMMSS_<6 hex>`, as Hermes names a session it starts.
         AnyHarness::Hermes(_) => {
             let parts: Vec<&str> = id.split('_').collect();
@@ -253,6 +255,7 @@ fn assert_ids(target: AnyHarness, session: &RehydrateSession) {
         assert!(seen.insert(id), "{id} is used twice");
         match target {
             AnyHarness::Amp(_) => unreachable!("atuin writes no Amp threads"),
+            AnyHarness::Vibe(_) => unreachable!("atuin writes no Vibe transcripts"),
             AnyHarness::Hermes(_) => {
                 assert!(id.len() == 32 && id.chars().all(|c| c.is_ascii_hexdigit()), "{id}");
             }
@@ -371,6 +374,7 @@ fn assert_shape(target: AnyHarness, source: AnyHarness, original: &str, s: &Rehy
         }
         let answered: Vec<String> = match target {
             AnyHarness::Amp(_) => unreachable!("atuin writes no Amp threads"),
+            AnyHarness::Vibe(_) => unreachable!("atuin writes no Vibe transcripts"),
             // A message of calls, then one of their results.
             AnyHarness::ClaudeCode(_) => ids(&rows[n + 1], true),
             // A message of calls, then a result each.
@@ -459,6 +463,7 @@ async fn written(target: AnyHarness, session: &RehydrateSession) -> Vec<Rehydrat
     let id = SessionId::from(session.id.clone());
     match target {
         AnyHarness::Amp(_) => unreachable!("atuin writes no Amp threads"),
+        AnyHarness::Vibe(_) => unreachable!("atuin writes no Vibe transcripts"),
         AnyHarness::Hermes(_) => {
             let lines = hermes::rehydrate::tests::written(root, session).await;
             assert_eq!(
