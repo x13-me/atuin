@@ -1,23 +1,26 @@
 //! Mistral's Vibe CLI (`vibe`): installing its hooks and resuming its sessions.
 //!
+//! Mistral's Vibe CLI (`vibe`): installing its hooks, capturing and resuming its sessions.
+//!
 //! Vibe keeps its configuration and state in `$VIBE_HOME`, by default `~/.vibe`. It loads
 //! `hooks.toml` there (and in a trusted project's `.vibe/`) on each run, and registers MCP
 //! servers as `[[mcp_servers]]` tables in its `config.toml` (see [`hooks`] and
 //! [`super::mcp`]). Sessions are saved under the home and reopened with `vibe --resume <id>`;
-//! Atuin records the commands Vibe runs through the hooks, and does not read its transcripts.
+//! Atuin records the commands Vibe runs through the hooks, and reads its transcripts (see
+//! [`session`]).
 
 use std::path::PathBuf;
 
 use super::rehydrate::{RehydrateError, RehydrateSession, Rehydrated};
 use super::resume::{self, CwdRequirement, ResumeError, ResumePlan, ResumeTarget};
-use super::session::any::{AnySessions, ObservableExt};
 use super::{Harness, InstallHookError};
 use crate::dirs::home_dir;
 use crate::env::var_nonempty;
 use crate::path::PathBufExt as _;
-use crate::sync::BlockingPool;
 
 pub mod hooks;
+pub mod rehydrate;
+pub mod session;
 
 /// Vibe's home directory: `$VIBE_HOME`, else `~/.vibe`.
 pub(crate) fn home() -> PathBuf {
@@ -64,21 +67,17 @@ impl Harness for Vibe {
         Ok(resume::plan(target, CwdRequirement::None, self.program(), args))
     }
 
-    /// Vibe's transcripts are not read: only its hook events are recorded.
-    async fn locate(&self, _id: &str) -> Option<PathBuf> {
-        None
+    /// The session's store or folder under Vibe's save dir (see [`session`]).
+    async fn locate(&self, id: &str) -> Option<PathBuf> {
+        let root = session::default_root();
+        let id = id.to_owned();
+        resume::blocking(move || session::locate(&root, &id)).await
     }
 
-    /// There is no transcript to write one into: `vibe --resume` reads Vibe's own copy.
-    async fn rehydrate(&self, _session: &RehydrateSession) -> Result<Rehydrated, RehydrateError> {
-        Err(RehydrateError::Unsupported("Vibe"))
-    }
-}
-
-/// Vibe's sessions are not watched: only its hook events are recorded.
-impl ObservableExt for Vibe {
-    fn sessions(&self, _pool: &BlockingPool) -> Option<AnySessions> {
-        None
+    /// Written out as a legacy session folder under the save dir (see [`rehydrate`]), which
+    /// `vibe --resume <id>` still reads.
+    async fn rehydrate(&self, session: &RehydrateSession) -> Result<Rehydrated, RehydrateError> {
+        rehydrate::rehydrate(session).await.map(Rehydrated::at)
     }
 }
 
